@@ -1666,6 +1666,7 @@
   "View logs": "查看日志",
   "Stream": "实时流 (Stream)",
   "End of results (\\$\\{total\\.toLocaleString\\(\\)\\} events)": "搜索结果已加载完毕 (共 ${total.toLocaleString()} 个事件)",
+  "Values set by you at create time will stay. To reset to the image's current values, Remove & Deploy.": "您在创建时设置的值将被保留。要重置为镜像的当前值，请“删除并部署”。",
   "What are config sets?": "什么是配置集？",
   "What's new": "版本特性",
   "Workdir": "工作目录",

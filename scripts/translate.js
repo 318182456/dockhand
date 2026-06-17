@@ -90,6 +90,13 @@ walkDir(srcDir, (filePath) => {
       content = content.replace(/`Prune images: \${env\?\.name \|\| 'Unknown'}`/g, '`清理镜像: ${env?.name || \'未知\'}`');
     }
 
+    if (content.includes('differ from the image:')) {
+      // {containerData.divergence.env.length} env var{containerData.divergence.env.length === 1 ? '' : 's'} differ from the image:
+      content = content.replace(/\{containerData\.divergence\.env\.length\}\s*env var\{containerData\.divergence\.env\.length === 1 \? '' : 's'\}\s*differ from the image:/g, '{containerData.divergence.env.length} 个环境变量与镜像不同:');
+      // {containerData.divergence.labels.length} label{containerData.divergence.labels.length === 1 ? '' : 's'} differ from the image:
+      content = content.replace(/\{containerData\.divergence\.labels\.length\}\s*label\{containerData\.divergence\.labels\.length === 1 \? '' : 's'\}\s*differ from the image:/g, '{containerData.divergence.labels.length} 个标签与镜像不同:');
+    }
+
     if (content !== original) {
       fs.writeFileSync(filePath, content, 'utf8');
       replacedCount++;
