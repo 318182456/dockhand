@@ -77,6 +77,11 @@ walkDir(srcDir, (filePath) => {
       content = content.replace(backtickRegex, `\`${value}\``);
     }
 
+    // 针对动态模板字面量的特殊替换
+    if (content.includes('Search ${selectedRegistry.name} for images...')) {
+      content = content.replace(/`Search \${selectedRegistry\.name} for images\.\.\.`/g, '`在 ${selectedRegistry.name} 中搜索镜像...`');
+    }
+
     if (content !== original) {
       fs.writeFileSync(filePath, content, 'utf8');
       replacedCount++;
