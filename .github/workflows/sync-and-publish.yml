@@ -43,11 +43,13 @@ jobs:
         with:
           node-version: 24
 
-      - name: Run Translate Script
+      - name: Run Translate Script and Generate Lockfile
         run: |
           # 动态中文化：在构建 Docker 前直接在 CI 运行区修改源码文件
           # 这样 Dockerfile 中 COPY . . 时拷贝的就是翻译后的中文源码
           node scripts/translate.js
+          # 官方库中只包含 bun.lock 而没有 package-lock.json，但 Dockerfile 里硬编码了 COPY package-lock.json，我们需要生成一个以防止 Docker 报错
+          npm install --package-lock-only || true
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
