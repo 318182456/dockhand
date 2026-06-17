@@ -37,6 +37,9 @@ jobs:
             # 如需强行以官方为准，可以取消下面这行的注释
             # git reset --hard upstream/main
           }
+          
+          # 推送同步后的更新回本仓库
+          git push origin HEAD:main
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
