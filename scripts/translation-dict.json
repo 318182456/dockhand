@@ -1300,6 +1300,7 @@
   "Role": "角色",
   "Role deleted": "角色已删除",
   "Role mapping": "角色映射",
+  "Role-based access control (RBAC) is available with an enterprise license. Define custom roles with granular permissions and assign them to users.": "基于角色的访问控制 (RBAC) 在企业版许可证中可用。定义具有细粒度权限的自定义角色并分配给用户。",
   "Role name": "角色名称",
   "Roles": "角色与权限",
   "Run": "运行",
