@@ -106,6 +106,26 @@ walkDir(srcDir, (filePath) => {
       content = content.replace(/\{containerData\.divergence\.labels\.length\}\s*label\{containerData\.divergence\.labels\.length === 1 \? '' : 's'\}\s*differ from the image:/g, '{containerData.divergence.labels.length} 个标签与镜像不同:');
     }
 
+    if (content.includes('selectedCategories.length} categories')) {
+      content = content.replace(/\{selectedCategories\.length\}\s*categories/g, '{selectedCategories.length} 个分类');
+    }
+
+    if (content.includes('selectedSources.length} sources')) {
+      content = content.replace(/\{selectedSources\.length\}\s*sources/g, '{selectedSources.length} 个模板源');
+    }
+
+    if (content.includes('validation.count} templates')) {
+      content = content.replace(/\(\{validation\.count\}\s*templates\)/g, '({validation.count} 个模板)');
+    }
+
+    if (content.includes('source(s) failed validation')) {
+      content = content.replace(/`\$\{failedCount\}\s*source\(s\) failed validation`/g, '`${failedCount} 个模板源验证失败`');
+    }
+
+    if (content.includes('Disabled ${disabled} inactive source(s)')) {
+      content = content.replace(/`Disabled \$\{disabled\}\s*inactive source\(s\)`/g, '`已禁用 ${disabled} 个失效模板源`');
+    }
+
     if (content !== original) {
       fs.writeFileSync(filePath, content, 'utf8');
       replacedCount++;
