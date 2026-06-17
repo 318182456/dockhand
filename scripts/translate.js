@@ -43,6 +43,18 @@ walkDir(srcDir, (filePath) => {
   const ext = path.extname(filePath);
   // 仅处理 svelte, ts, js 页面文件
   if (['.svelte', '.ts', '.js'].includes(ext)) {
+    // 排除 server 端文件以保证 API、事件流及数据库操作的安全
+    const normalizedPath = filePath.replace(/\\/g, '/');
+    if (
+      normalizedPath.includes('/server/') || 
+      normalizedPath.endsWith('.server.ts') || 
+      normalizedPath.endsWith('.server.js') || 
+      path.basename(normalizedPath) === '+server.ts' || 
+      path.basename(normalizedPath) === '+server.js' ||
+      normalizedPath.endsWith('hooks.server.ts')
+    ) {
+      return;
+    }
     let content = fs.readFileSync(filePath, 'utf8');
     let original = content;
 
