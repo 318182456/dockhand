@@ -49,7 +49,7 @@ jobs:
           # 这样 Dockerfile 中 COPY . . 时拷贝的就是翻译后的中文源码
           node scripts/translate.js
           # 官方库中只包含 bun.lock 而没有 package-lock.json，但 Dockerfile 里硬编码了 COPY package-lock.json，我们需要生成一个以防止 Docker 报错
-          npm install --package-lock-only || true
+          npm install --package-lock-only --ignore-scripts || true
 
       # 移除了 QEMU 步骤，因为我们不再编译 arm64，只编 amd64
 
