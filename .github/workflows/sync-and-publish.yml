@@ -27,7 +27,7 @@ jobs:
       - name: Add Upstream Remote and Sync
         run: |
           # 绑定上游官方库并拉取
-          git remote add upstream https://github.com/fnsys/dockhand.git || true
+          git remote add upstream https://github.com/Finsys/dockhand.git || true
           git fetch upstream
           
           # 将上游主分支合并到当前主分支（如果存在冲突，采用上游为准或自动合并）
