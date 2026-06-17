@@ -49,18 +49,19 @@ walkDir(srcDir, (filePath) => {
     // 对排序后的每一个 key 执行安全替换
     for (const key of sortedKeys) {
       const value = dict[key];
-      if (!value) continue;
+      if (!value || key === value) continue;
 
-      // 为避免误伤代码变量，对 Svelte 的模板文本、Svelte store label 字符串做替换
-      // 1. >Text< 标签内文本匹配替换
-      const tagRegex = new RegExp(`>(\\s*)${escapeRegExp(key)}(\\s*)<`, 'g');
-      content = content.replace(tagRegex, `>$1${value}$2<`);
+      // 性能优化极其重要：如果文件中不包含该文本，直接跳过，避免昂贵的 RegExp 编译和匹配
+      if (!content.includes(key)) continue;
+
+      // 统一转义所有正则元字符以进行安全精确匹配
+      const keyPattern = escapeRegExp(key);
+
+      // 1. 替换 Svelte 模板中文本节点 (处于 > 或 } 之后，且在 < 或 { 之前)
+      const textRegex = new RegExp(`([>}]\\s*)${keyPattern}(\\s*[<{])`, 'g');
+      content = content.replace(textRegex, `$1${value}$2`);
 
       // 2. 字符串引号内的文案替换 (支持双引号、单引号、反引号)
-      // 注意：如果 key 中包含了正则表达式元字符，直接作为 RegExp 使用，否则使用 escapeRegExp 保护
-      const isRegexKey = key.includes('\\') || key.includes('$') || key.includes('{');
-      const keyPattern = isRegexKey ? key : escapeRegExp(key);
-
       const singleQuoteRegex = new RegExp(`'${keyPattern}'`, 'g');
       content = content.replace(singleQuoteRegex, `'${value}'`);
 
