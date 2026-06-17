@@ -57,14 +57,17 @@ walkDir(srcDir, (filePath) => {
       content = content.replace(tagRegex, `>$1${value}$2<`);
 
       // 2. 字符串引号内的文案替换 (支持双引号、单引号、反引号)
-      // 注意：确保 key 周围有引号且不为变量或属性名
-      const singleQuoteRegex = new RegExp(`'${escapeRegExp(key)}'`, 'g');
+      // 注意：如果 key 中包含了正则表达式元字符，直接作为 RegExp 使用，否则使用 escapeRegExp 保护
+      const isRegexKey = key.includes('\\') || key.includes('$') || key.includes('{');
+      const keyPattern = isRegexKey ? key : escapeRegExp(key);
+
+      const singleQuoteRegex = new RegExp(`'${keyPattern}'`, 'g');
       content = content.replace(singleQuoteRegex, `'${value}'`);
 
-      const doubleQuoteRegex = new RegExp(`"${escapeRegExp(key)}"`, 'g');
+      const doubleQuoteRegex = new RegExp(`"${keyPattern}"`, 'g');
       content = content.replace(doubleQuoteRegex, `"${value}"`);
 
-      const backtickRegex = new RegExp(`\`${escapeRegExp(key)}\``, 'g');
+      const backtickRegex = new RegExp(`\`${keyPattern}\``, 'g');
       content = content.replace(backtickRegex, `\`${value}\``);
     }
 
