@@ -43,18 +43,6 @@ walkDir(srcDir, (filePath) => {
   const ext = path.extname(filePath);
   // 仅处理 svelte, ts, js 页面文件
   if (['.svelte', '.ts', '.js'].includes(ext)) {
-    // 排除 server 端文件以保证 API、事件流及数据库操作的安全
-    const normalizedPath = filePath.replace(/\\/g, '/');
-    if (
-      normalizedPath.includes('/server/') || 
-      normalizedPath.endsWith('.server.ts') || 
-      normalizedPath.endsWith('.server.js') || 
-      path.basename(normalizedPath) === '+server.ts' || 
-      path.basename(normalizedPath) === '+server.js' ||
-      normalizedPath.endsWith('hooks.server.ts')
-    ) {
-      return;
-    }
     let content = fs.readFileSync(filePath, 'utf8');
     let original = content;
 
@@ -62,6 +50,11 @@ walkDir(srcDir, (filePath) => {
     for (const key of sortedKeys) {
       const value = dict[key];
       if (!value || key === value) continue;
+
+      // 如果是 js/ts 文件，且 key 是保留关键字/HTTP头，则跳过以防破坏代码逻辑
+      if (['.ts', '.js'].includes(ext) && ['Connection', 'Status', 'Type', 'Method', 'Unknown'].includes(key)) {
+        continue;
+      }
 
       // 性能优化极其重要：如果文件中不包含该文本，直接跳过，避免昂贵的 RegExp 编译和匹配
       if (!content.includes(key)) continue;
