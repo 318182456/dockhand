@@ -772,6 +772,7 @@
   "Health check log": "健康检查日志",
   "Healthcheck": "健康检查",
   "health_status: healthy": "健康状态: 健康",
+  "health_status: unhealthy": "健康状态: 不健康",
   "Hide system": "隐藏系统任务",
   "High": "高危",
   "Highlight available updates": "高亮显示可用更新",
