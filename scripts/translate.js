@@ -82,6 +82,14 @@ walkDir(srcDir, (filePath) => {
       content = content.replace(/`Search \${selectedRegistry\.name} for images\.\.\.`/g, '`在 ${selectedRegistry.name} 中搜索镜像...`');
     }
 
+    if (content.includes('Update environment: ${env?.name || \'Unknown\'}')) {
+      content = content.replace(/`Update environment: \${env\?\.name \|\| 'Unknown'}`/g, '`更新环境: ${env?.name || \'未知\'}`');
+    }
+
+    if (content.includes('Prune images: ${env?.name || \'Unknown\'}')) {
+      content = content.replace(/`Prune images: \${env\?\.name \|\| 'Unknown'}`/g, '`清理镜像: ${env?.name || \'未知\'}`');
+    }
+
     if (content !== original) {
       fs.writeFileSync(filePath, content, 'utf8');
       replacedCount++;
