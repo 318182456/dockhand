@@ -51,8 +51,7 @@ jobs:
           # 官方库中只包含 bun.lock 而没有 package-lock.json，但 Dockerfile 里硬编码了 COPY package-lock.json，我们需要生成一个以防止 Docker 报错
           npm install --package-lock-only || true
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      # 移除了 QEMU 步骤，因为我们不再编译 arm64，只编 amd64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -88,7 +87,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
