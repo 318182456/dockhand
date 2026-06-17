@@ -1657,6 +1657,7 @@
   "Automatically removes temporary containers used for browsing volume contents. Runs every 30 minutes and on startup.": "自动删除用于浏览卷内容的临时容器。每 30 分钟以及启动时运行。",
   "Docker logs use UTC timestamps by default. When enabled, timestamps like 2026-01-12T07:47:44Z are converted to local time using your date/time settings.": "Docker 日志默认使用 UTC 时间戳。启用后，形如 2026-01-12T07:47:44Z 的时间戳将使用您的日期/时间设置转换为本地时间。",
   "View details": "查看详情",
+  "View logs": "查看日志",
   "What are config sets?": "什么是配置集？",
   "What's new": "版本特性",
   "Workdir": "工作目录",
