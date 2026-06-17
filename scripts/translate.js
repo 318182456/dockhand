@@ -126,6 +126,163 @@ walkDir(srcDir, (filePath) => {
       content = content.replace(/`Disabled \$\{disabled\}\s*inactive source\(s\)`/g, '`已禁用 ${disabled} 个失效模板源`');
     }
 
+    // ----------------------------------------------------
+    // Custom post-processing replacements (1ms.run docker pull acceleration)
+    // ----------------------------------------------------
+    const relativePath = filePath.replace(/\\/g, '/');
+
+    if (relativePath.endsWith('src/lib/server/docker.ts')) {
+      if (content.includes('export async function pullImage(')) {
+        const targetPull = content.match(/export async function pullImage\([\s\S]*?\}\n\nexport async function removeImage\(/) ||
+                           content.match(/export async function pullImage\([\s\S]*?\}\r\n\r\nexport async function removeImage\(/);
+        if (targetPull) {
+          const removeImageIndex = targetPull[0].indexOf('export async function removeImage');
+          const originalBlock = targetPull[0].substring(0, removeImageIndex);
+          const replacementBlock = `export async function pullImage(imageName: string, onProgress?: (data: any) => void, envId?: number | null) {
+	// Parse image name and tag to avoid pulling all tags
+	let fromImage = imageName;
+	let tag = 'latest';
+
+	if (imageName.includes('@')) {
+		fromImage = imageName;
+		tag = '';
+	} else if (imageName.includes(':')) {
+		const lastColonIndex = imageName.lastIndexOf(':');
+		const potentialTag = imageName.substring(lastColonIndex + 1);
+		if (!potentialTag.includes('/')) {
+			fromImage = imageName.substring(0, lastColonIndex);
+			tag = potentialTag;
+		}
+	}
+
+	let isAccelerated = false;
+	let pullFromImage = fromImage;
+	let pullTag = tag;
+
+	let registry = '';
+	let repoAndTag = imageName;
+	const firstSlash = imageName.indexOf('/');
+	if (firstSlash > -1) {
+		const firstPart = imageName.substring(0, firstSlash);
+		if (firstPart.includes('.') || firstPart.includes(':') || firstPart === 'localhost') {
+			registry = firstPart;
+			repoAndTag = imageName.substring(firstSlash + 1);
+		}
+	}
+
+	let targetRegistry = '';
+	if (registry === '' || registry === 'docker.io' || registry === 'index.docker.io') {
+		targetRegistry = 'docker.1ms.run';
+	} else if (registry === 'ghcr.io') {
+		targetRegistry = 'ghcr.1ms.run';
+	} else if (registry === 'registry.k8s.io') {
+		targetRegistry = 'k8s.1ms.run';
+	}
+
+	if (targetRegistry) {
+		isAccelerated = true;
+		let acceleratedRepo = repoAndTag;
+		if (repoAndTag.includes('@')) {
+			const [r] = repoAndTag.split('@');
+			acceleratedRepo = r;
+		} else if (repoAndTag.includes(':')) {
+			const lastColon = repoAndTag.lastIndexOf(':');
+			const potentialTag = repoAndTag.substring(lastColon + 1);
+			if (!potentialTag.includes('/')) {
+				acceleratedRepo = repoAndTag.substring(0, lastColon);
+			}
+		}
+		pullFromImage = \`\${targetRegistry}/\${acceleratedRepo}\`;
+		pullTag = tag;
+		console.log(\`[Pull] 1ms Acceleration active: \${imageName} -> \${pullFromImage}\${pullTag ? ':' + pullTag : ''}\`);
+	}
+
+	const url = pullTag
+		? \`/images/create?fromImage=\${encodeURIComponent(pullFromImage)}&tag=\${encodeURIComponent(pullTag)}\`
+		: \`/images/create?fromImage=\${encodeURIComponent(pullFromImage)}\`;
+
+	// We only use registry credentials for non-accelerated pulls (public mirrors don't need authentication)
+	const headers = isAccelerated ? {} : await buildRegistryAuthHeader(imageName);
+
+	console.log(\`[Pull] POST \${url} headers=\${Object.keys(headers).join(',') || '(none)'}\`);
+	const response = await dockerFetch(url, { method: 'POST', streaming: true, headers }, envId);
+	console.log(\`[Pull] response status=\${response.status} \${response.statusText}\`);
+
+	if (!response.ok) {
+		const body = await response.text();
+		console.error(\`[Pull] error body: \${body}\`);
+		throw new Error(\`Failed to pull image: \${body}\`);
+	}
+
+	const reader = response.body?.getReader();
+	if (!reader) return;
+
+	const decoder = new TextDecoder();
+	let buffer = '';
+
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+
+		buffer += decoder.decode(value, { stream: true });
+		const lines = buffer.split('\\n');
+		buffer = lines.pop() || '';
+
+		for (const line of lines) {
+			if (line.trim()) {
+				try {
+					const data = JSON.parse(line);
+					if (data.error || data.errorDetail) {
+						console.error(\`[Pull] stream error: \${line}\`);
+					}
+					if (onProgress) onProgress(data);
+				} catch {
+					// Ignore parse errors
+				}
+			}
+		}
+	}
+
+	if (isAccelerated) {
+		// Tag back to original name
+		const pulledName = pullTag ? \`\${pullFromImage}:\${pullTag}\` : pullFromImage;
+		let originalRepo = fromImage;
+		let originalTag = tag || 'latest';
+		console.log(\`[Pull] Tagging accelerated image \${pulledName} back to original \${originalRepo}:\${originalTag}\`);
+		const tagUrl = \`/images/\${encodeURIComponent(pulledName)}/tag?repo=\${encodeURIComponent(originalRepo)}&tag=\${encodeURIComponent(originalTag)}\`;
+		const tagResponse = await dockerFetch(tagUrl, { method: 'POST' }, envId);
+		if (!tagResponse.ok) {
+			const tagBody = await tagResponse.text();
+			console.error(\`[Pull] Failed to tag image back: \${tagBody}\`);
+			throw new Error(\`Failed to tag accelerated image back: \${tagBody}\`);
+		}
+		await drainResponse(tagResponse);
+
+		// Clean up the accelerated temporary tag
+		console.log(\`[Pull] Cleaning up temporary tag \${pulledName}\`);
+		const removeResponse = await dockerFetch(\`/images/\${encodeURIComponent(pulledName)}?force=false\`, { method: 'DELETE' }, envId);
+		await drainResponse(removeResponse);
+	}
+}`;
+          content = content.replace(originalBlock, replacementBlock);
+        }
+      }
+      content = content.replace(
+        /const\s*\{\s*registry,\s*repo,\s*tag\s*\}\s*=\s*parseImageReference\(imageName\);\r?\n\t\tconst\s*token\s*=\s*await\s*getRegistryBearerToken\(registry,\s*repo\);\r?\n\t\tconst\s*manifestUrl\s*=\s*`https:\/\/\$\{registry\}\/v2\/\$\{repo\}\/manifests\/\$\{tag\}`;/g,
+        `const { registry, repo, tag } = parseImageReference(imageName);
+		let queryRegistry = registry;
+		if (registry === 'index.docker.io' || registry === 'docker.io') {
+			queryRegistry = 'docker.1ms.run';
+		} else if (registry === 'ghcr.io') {
+			queryRegistry = 'ghcr.1ms.run';
+		} else if (registry === 'registry.k8s.io') {
+			queryRegistry = 'k8s.1ms.run';
+		}
+		const token = await getRegistryBearerToken(queryRegistry, repo);
+		const manifestUrl = \`https://\${queryRegistry}/v2/\${repo}/manifests/\${tag}\`;`
+      );
+    }
+
     if (content !== original) {
       fs.writeFileSync(filePath, content, 'utf8');
       replacedCount++;
