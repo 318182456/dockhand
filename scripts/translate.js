@@ -46,6 +46,15 @@ walkDir(srcDir, (filePath) => {
     let content = fs.readFileSync(filePath, 'utf8');
     let original = content;
 
+    // 预处理特殊规则：防止 'Created' 被词典中的“创建时间”误替换
+    if (content.includes("value: 'created', label: 'Created'")) {
+      content = content.replace(/value: 'created', label: 'Created'/g, "value: 'created', label: '已创建'");
+    }
+
+    if (content.includes("label: 'Status'")) {
+      content = content.replace(/label: 'Status'/g, "label: '状态'");
+    }
+
     // 对排序后的每一个 key 执行安全替换
     for (const key of sortedKeys) {
       const value = dict[key];
