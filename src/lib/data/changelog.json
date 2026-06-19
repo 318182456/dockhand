@@ -1,5 +1,18 @@
 [
   {
+    "version": "1.0.35",
+    "date": "2026-06-19",
+    "changes": [
+      { "type": "feature", "text": "image prune skips Dockhand's scanner images (grype, trivy), configurable (#625)" },
+      { "type": "fix", "text": "\"No archive\" download format selection not persisted (#1180)" },
+      { "type": "fix", "text": "regression: vulnerability scans on direct-TCP envs (#1195)" },
+      { "type": "fix", "text": "Pangolin labels — recognise the real `public-resources` / `private-resources` namespaces (#2)" },
+      { "type": "fix", "text": "healthcheck uses HTTPS probe when HTTPS_MODE=on (#1191)" },
+      { "type": "fix", "text": "shell detection improved for containers with non-standard PATH or shell locations (#1189)" }
+    ],
+    "imageTag": "fnsys/dockhand:v1.0.35"
+  },
+  {
     "version": "1.0.34",
     "date": "2026-06-17",
     "changes": [

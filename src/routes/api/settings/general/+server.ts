@@ -38,7 +38,7 @@ import { DEFAULT_GRYPE_IMAGE, DEFAULT_TRIVY_IMAGE } from '$lib/server/scanner';
 
 export type TimeFormat = '12h' | '24h';
 export type DateFormat = 'MM/DD/YYYY' | 'DD/MM/YYYY' | 'YYYY-MM-DD' | 'DD.MM.YYYY';
-export type DownloadFormat = 'tar' | 'tar.gz';
+export type DownloadFormat = 'tar' | 'tar.gz' | 'raw';
 export type EventCollectionMode = 'stream' | 'poll';
 
 export interface GeneralSettings {
@@ -91,7 +91,8 @@ export interface GeneralSettings {
 	// Label filter mode
 	labelFilterMode: 'any' | 'all';
 	// Whether to surface URLs inferred from reverse-proxy labels — currently
-	// Traefik (traefik.http.routers.*) and Pangolin (pangolin.proxy-resources.*).
+	// Traefik (traefik.http.routers.*) and Pangolin
+	// (pangolin.{public,private}-resources.*).
 	// When false both parsers are bypassed and no proxy-derived pills are rendered.
 	honorProxyLabels: boolean;
 	// Whether to surface a "view changelog" link next to the update badge.
@@ -99,6 +100,8 @@ export interface GeneralSettings {
 	showImageChangelogLinks: boolean;
 	// Whether spinning icons (animate-spin etc.) are animated (#1169)
 	animateIcons: boolean;
+	// Skip Dockhand's scanner images (grype, trivy) during 'prune all unused' (#625)
+	protectScannerImages: boolean;
 }
 
 const DEFAULT_SETTINGS: Omit<GeneralSettings, 'scheduleRetentionDays' | 'eventRetentionDays' | 'scheduleCleanupCron' | 'eventCleanupCron' | 'scheduleCleanupEnabled' | 'eventCleanupEnabled' | 'scannerCleanupCron' | 'scannerCleanupEnabled'> = {
@@ -134,6 +137,7 @@ const DEFAULT_SETTINGS: Omit<GeneralSettings, 'scheduleRetentionDays' | 'eventRe
 	honorProxyLabels: true,
 	showImageChangelogLinks: true,
 	animateIcons: true,
+	protectScannerImages: true,
 	defaultComposeTemplate: `version: "3.8"
 
 services:
@@ -214,7 +218,8 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			labelFilterMode,
 			honorProxyLabels,
 			showImageChangelogLinks,
-			animateIcons
+			animateIcons,
+			protectScannerImages
 		] = await Promise.all([
 			getSetting('confirm_destructive'),
 			getSetting('show_stopped_containers'),
@@ -256,7 +261,8 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			getSetting('label_filter_mode'),
 			getSetting('honor_proxy_labels'),
 			getSetting('show_image_changelog_links'),
-			getSetting('animate_icons')
+			getSetting('animate_icons'),
+			getSetting('protect_scanner_images')
 		]);
 
 		const settings: GeneralSettings = {
@@ -302,7 +308,8 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			labelFilterMode: labelFilterMode ?? DEFAULT_SETTINGS.labelFilterMode,
 			honorProxyLabels: honorProxyLabels ?? DEFAULT_SETTINGS.honorProxyLabels,
 			showImageChangelogLinks: showImageChangelogLinks ?? DEFAULT_SETTINGS.showImageChangelogLinks,
-			animateIcons: animateIcons ?? DEFAULT_SETTINGS.animateIcons
+			animateIcons: animateIcons ?? DEFAULT_SETTINGS.animateIcons,
+			protectScannerImages: protectScannerImages ?? DEFAULT_SETTINGS.protectScannerImages
 		};
 
 		return json(settings);
@@ -320,7 +327,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 
 	try {
 		const body = await request.json();
-		const { confirmDestructive, showStoppedContainers, highlightUpdates, timeFormat, dateFormat, downloadFormat, defaultGrypeArgs, defaultTrivyArgs, scheduleRetentionDays, eventRetentionDays, scheduleCleanupCron, eventCleanupCron, scheduleCleanupEnabled, eventCleanupEnabled, scannerCleanupCron, scannerCleanupEnabled, logBufferSizeKb, logMaxLines, defaultTimezone, eventCollectionMode, eventPollInterval, metricsCollectionInterval, lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, editorFont, compactPorts, showExposedPorts, formatLogTimestamps, externalStackPaths, primaryStackLocation, defaultGrypeImage, defaultTrivyImage, defaultComposeTemplate, labelFilterMode, honorProxyLabels, showImageChangelogLinks, animateIcons } = body;
+		const { confirmDestructive, showStoppedContainers, highlightUpdates, timeFormat, dateFormat, downloadFormat, defaultGrypeArgs, defaultTrivyArgs, scheduleRetentionDays, eventRetentionDays, scheduleCleanupCron, eventCleanupCron, scheduleCleanupEnabled, eventCleanupEnabled, scannerCleanupCron, scannerCleanupEnabled, logBufferSizeKb, logMaxLines, defaultTimezone, eventCollectionMode, eventPollInterval, metricsCollectionInterval, lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, editorFont, compactPorts, showExposedPorts, formatLogTimestamps, externalStackPaths, primaryStackLocation, defaultGrypeImage, defaultTrivyImage, defaultComposeTemplate, labelFilterMode, honorProxyLabels, showImageChangelogLinks, animateIcons, protectScannerImages } = body;
 
 		if (confirmDestructive !== undefined) {
 			await setSetting('confirm_destructive', confirmDestructive);
@@ -337,7 +344,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 		if (dateFormat !== undefined && VALID_DATE_FORMATS.includes(dateFormat)) {
 			await setSetting('date_format', dateFormat);
 		}
-		if (downloadFormat !== undefined && (downloadFormat === 'tar' || downloadFormat === 'tar.gz')) {
+		if (downloadFormat !== undefined && (downloadFormat === 'tar' || downloadFormat === 'tar.gz' || downloadFormat === 'raw')) {
 			await setSetting('download_format', downloadFormat);
 		}
 		if (defaultGrypeArgs !== undefined && typeof defaultGrypeArgs === 'string') {
@@ -469,6 +476,9 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 		if (animateIcons !== undefined && typeof animateIcons === 'boolean') {
 			await setSetting('animate_icons', animateIcons);
 		}
+		if (protectScannerImages !== undefined && typeof protectScannerImages === 'boolean') {
+			await setSetting('protect_scanner_images', protectScannerImages);
+		}
 
 		// Fetch all settings in parallel for the response
 		const [
@@ -512,7 +522,8 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			labelFilterModeVal,
 			honorProxyLabelsVal,
 			showImageChangelogLinksVal,
-			animateIconsVal
+			animateIconsVal,
+			protectScannerImagesVal
 		] = await Promise.all([
 			getSetting('confirm_destructive'),
 			getSetting('show_stopped_containers'),
@@ -554,7 +565,8 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			getSetting('label_filter_mode'),
 			getSetting('honor_proxy_labels'),
 			getSetting('show_image_changelog_links'),
-			getSetting('animate_icons')
+			getSetting('animate_icons'),
+			getSetting('protect_scanner_images')
 		]);
 
 		const settings: GeneralSettings = {
@@ -599,6 +611,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			defaultComposeTemplate: defaultComposeTemplateVal ?? DEFAULT_SETTINGS.defaultComposeTemplate,
 			labelFilterMode: labelFilterModeVal ?? DEFAULT_SETTINGS.labelFilterMode,
 			honorProxyLabels: honorProxyLabelsVal ?? DEFAULT_SETTINGS.honorProxyLabels,
+			protectScannerImages: protectScannerImagesVal ?? DEFAULT_SETTINGS.protectScannerImages,
 			showImageChangelogLinks: showImageChangelogLinksVal ?? DEFAULT_SETTINGS.showImageChangelogLinks,
 			animateIcons: animateIconsVal ?? DEFAULT_SETTINGS.animateIcons
 		};

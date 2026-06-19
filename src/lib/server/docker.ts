@@ -13,7 +13,7 @@ import * as https from 'node:https';
 import * as tls from 'node:tls';
 import { createHash } from 'node:crypto';
 import type { Environment } from './db';
-import { getStackEnvVarsAsRecord } from './db';
+import { getStackEnvVarsAsRecord, getSetting } from './db';
 import { getAdditionalVolumeBinds } from './mount-dedupe';
 import { encodeRegistryAuth } from './registry-auth';
 import { isSystemContainer } from './scheduler/tasks/update-utils';
@@ -4271,11 +4271,69 @@ export async function pruneContainers(envId?: number | null) {
 }
 
 export async function pruneImages(dangling = true, envId?: number | null) {
-	// dangling=true: only remove untagged images (default Docker behavior)
-	// dangling=false: remove ALL unused images including tagged ones
-	// Docker API quirk: to remove all unused, we pass dangling=false filter
-	const filters = dangling ? '{"dangling":["true"]}' : '{"dangling":["false"]}';
-	return dockerJsonRequest(`/images/prune?filters=${encodeURIComponent(filters)}`, { method: 'POST' }, envId);
+	// dangling=true: only remove untagged images. Pass straight through —
+	// scanner images are always tagged so they can't be dangling anyway.
+	if (dangling) {
+		return dockerJsonRequest(
+			`/images/prune?filters=${encodeURIComponent('{"dangling":["true"]}')}`,
+			{ method: 'POST' },
+			envId
+		);
+	}
+
+	// dangling=false: "prune all unused." When the scanner-protection setting
+	// is on, shield grype + trivy with stopped holder containers (Docker's
+	// "in use" check keeps them) then tear them down in a finally (#625).
+	const protect = (await getSetting('protect_scanner_images')) !== false;
+	if (!protect) {
+		return dockerJsonRequest(
+			`/images/prune?filters=${encodeURIComponent('{"dangling":["false"]}')}`,
+			{ method: 'POST' },
+			envId
+		);
+	}
+
+	const { DEFAULT_GRYPE_IMAGE, DEFAULT_TRIVY_IMAGE } = await import('./scanner');
+	const grypeImg = (await getSetting('default_grype_image')) ?? DEFAULT_GRYPE_IMAGE;
+	const trivyImg = (await getSetting('default_trivy_image')) ?? DEFAULT_TRIVY_IMAGE;
+
+	const holderIds: string[] = [];
+	for (const image of [grypeImg, trivyImg]) {
+		try {
+			const safeName = `dockhand-prune-keep-${image.replace(/[^a-z0-9]/gi, '-')}-${Date.now()}`;
+			const created = await dockerJsonRequest<{ Id: string }>(
+				`/containers/create?name=${encodeURIComponent(safeName)}`,
+				{
+					method: 'POST',
+					body: JSON.stringify({ Image: image, Cmd: ['/bin/true'] })
+				},
+				envId
+			);
+			holderIds.push(created.Id);
+		} catch {
+			// Image not present locally → nothing to protect → no-op
+		}
+	}
+
+	try {
+		return await dockerJsonRequest(
+			`/images/prune?filters=${encodeURIComponent('{"dangling":["false"]}')}`,
+			{ method: 'POST' },
+			envId
+		);
+	} finally {
+		for (const id of holderIds) {
+			try {
+				await dockerJsonRequest(
+					`/containers/${id}?force=true`,
+					{ method: 'DELETE' },
+					envId
+				);
+			} catch {
+				// Best-effort cleanup; orphan holders are visible but harmless
+			}
+		}
+	}
 }
 
 export async function pruneVolumes(envId?: number | null) {

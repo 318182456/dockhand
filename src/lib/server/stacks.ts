@@ -18,6 +18,7 @@ import {
 	type DeletionApplyResult,
 	type DeletionSkipReason
 } from './git-deletions';
+import { isAllowedStackFilename } from './stack-filename';
 import {
 	getEnvironment,
 	getSecretEnvVarsAsRecord,
@@ -34,9 +35,7 @@ import {
 	removePendingContainerUpdate,
 	deleteAutoUpdateSchedule,
 	getAutoUpdateSetting,
-	getStackSourceByComposePath,
-	getExternalStackPaths,
-	addExternalStackPath
+	getStackSourceByComposePath
 } from './db';
 import { unregisterSchedule } from './scheduler';
 import { deleteGitStackFiles, parseEnvFileContent } from './git';
@@ -351,19 +350,6 @@ export async function getStackDir(stackName: string, envId?: number | null): Pro
 }
 
 /**
- * Filenames a stack is allowed to write. Compose files in the conventional
- * names + .env. Anything else is rejected even when the directory is in
- * the allowlist, so this code path can only ever produce stack-shaped files.
- */
-const ALLOWED_STACK_FILENAMES = new Set([
-	'docker-compose.yml',
-	'docker-compose.yaml',
-	'compose.yml',
-	'compose.yaml',
-	'.env'
-]);
-
-/**
  * Resolve a path against the parent's realpath when the parent exists, so
  * symlinks resolve to their canonical location. We can't realpath the leaf
  * because the file may not exist yet (new stack).
@@ -381,13 +367,6 @@ function resolveStackPath(input: string): string {
 	return abs;
 }
 
-function isInside(child: string, parent: string): boolean {
-	const c = pathNormalize(child);
-	const p = pathNormalize(parent);
-	if (c === p) return true;
-	return c.startsWith(p.endsWith(pathSep) ? p : p + pathSep);
-}
-
 export interface StackPathValidation {
 	ok: boolean;
 	error?: string;
@@ -396,15 +375,10 @@ export interface StackPathValidation {
 
 /**
  * Validate that a custom compose or env file path is writable by this code
- * path. A path is accepted when it lives inside getStacksDir() or any
- * directory in the external_stack_paths allowlist (admin-controlled, set
- * in Settings → General), its filename is one of the conventional
- * compose/env names, and it does not contain .. segments. The parent is
- * resolved via realpath so a symlinked component inside an allowlisted dir
- * cannot point elsewhere.
- *
- * Callers that need to grandfather an existing admin-configured path should
- * call validateStackPathWithGrandfather() instead.
+ * path. A path is accepted when:
+ *   - filename matches the stack-filename gate (.yml/.yaml/.env family)
+ *   - normalized form contains no .. segments (parent directory resolved
+ *     via realpath so a symlinked component can't smuggle traversal in)
  */
 export async function validateStackPath(input: string): Promise<StackPathValidation> {
 	if (!input || typeof input !== 'string') {
@@ -420,53 +394,14 @@ export async function validateStackPath(input: string): Promise<StackPathValidat
 	}
 
 	const filename = basename(resolvedPath);
-	if (!ALLOWED_STACK_FILENAMES.has(filename)) {
+	if (!isAllowedStackFilename(filename)) {
 		return {
 			ok: false,
-			error: `File "${filename}" is not an allowed stack filename (expected one of: ${[...ALLOWED_STACK_FILENAMES].join(', ')})`
+			error: `File "${filename}" is not an allowed stack filename (must end in .yml, .yaml, or .env)`
 		};
 	}
 
-	const stacksDir = getStacksDir();
-	if (isInside(resolvedPath, stacksDir)) {
-		return { ok: true, resolved: resolvedPath };
-	}
-
-	const allowlist = await getExternalStackPaths();
-	for (const dir of allowlist) {
-		if (!dir) continue;
-		const dirResolved = resolve(dir);
-		if (isInside(resolvedPath, dirResolved)) {
-			return { ok: true, resolved: resolvedPath };
-		}
-	}
-
-	return {
-		ok: false,
-		error: `Path "${resolvedPath}" is not inside an allowed stack directory. Add its parent directory in Settings → General → External stack paths.`
-	};
-}
-
-/**
- * Same as validateStackPath, but when the path comes from an existing
- * stack source row (a stored custom path the admin set previously) and
- * fails the allowlist check, add its parent dir to external_stack_paths
- * and re-validate. Lets old custom-path configurations keep working
- * without operator intervention.
- */
-export async function validateStackPathWithGrandfather(
-	input: string,
-	isPreExisting: boolean
-): Promise<StackPathValidation> {
-	const first = await validateStackPath(input);
-	if (first.ok || !isPreExisting) return first;
-
-	const parent = dirname(resolveStackPath(input));
-	const added = await addExternalStackPath(parent);
-	if (added) {
-		console.log(`[Stack] Grandfathered pre-existing custom path: ${parent}`);
-	}
-	return validateStackPath(input);
+	return { ok: true, resolved: resolvedPath };
 }
 
 /**
@@ -675,28 +610,16 @@ export async function saveStackComposeFile(
 	const source = await getStackSource(name, envId);
 	const composePath = options?.composePath || source?.composePath;
 
-	// Path-allowlist validation. Pre-existing stored paths grandfather into
-	// the allowlist; new caller-supplied paths must already be inside it.
+	// Validate every caller-supplied or stored path before any disk write.
 	// See validateStackPath() docs.
-	if (composePath) {
-		const fromDb = !options?.composePath && !!source?.composePath;
-		const v = await validateStackPathWithGrandfather(composePath, fromDb);
-		if (!v.ok) return { success: false, error: v.error };
-	}
-	if (options?.envPath) {
-		const v = await validateStackPath(options.envPath);
-		if (!v.ok) return { success: false, error: v.error };
-	} else if (source?.envPath && !options?.envPath) {
-		// Grandfather a DB-stored env path that may have been configured before validation.
-		const v = await validateStackPathWithGrandfather(source.envPath, true);
-		if (!v.ok) return { success: false, error: v.error };
-	}
-	if (options?.oldComposePath) {
-		const v = await validateStackPathWithGrandfather(options.oldComposePath, true);
-		if (!v.ok) return { success: false, error: v.error };
-	}
-	if (options?.oldEnvPath) {
-		const v = await validateStackPathWithGrandfather(options.oldEnvPath, true);
+	const pathsToCheck = [
+		composePath,
+		options?.envPath ?? source?.envPath,
+		options?.oldComposePath,
+		options?.oldEnvPath
+	].filter((p): p is string => !!p);
+	for (const path of pathsToCheck) {
+		const v = await validateStackPath(path);
 		if (!v.ok) return { success: false, error: v.error };
 	}
 

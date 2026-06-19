@@ -166,7 +166,11 @@ RUN mkdir -p /home/dockhand/.dockhand/stacks /app/data \
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-3000}/ || exit 1
+    CMD if [ "$(echo "${HTTPS_MODE:-off}" | tr '[:upper:]' '[:lower:]')" = "on" ]; then \
+            curl -fsk https://localhost:${PORT:-3000}/ || exit 1; \
+        else \
+            curl -fs http://localhost:${PORT:-3000}/ || exit 1; \
+        fi
 
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD []

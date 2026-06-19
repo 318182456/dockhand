@@ -41,6 +41,7 @@ export interface AppSettings {
 	labelFilterMode: LabelFilterMode;
 	honorProxyLabels: boolean;
 	showImageChangelogLinks: boolean;
+	protectScannerImages: boolean;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -76,6 +77,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 	labelFilterMode: 'any',
 	honorProxyLabels: true,
 	showImageChangelogLinks: true,
+	protectScannerImages: true,
 	defaultComposeTemplate: `version: "3.8"
 
 services:
@@ -157,7 +159,8 @@ function createSettingsStore() {
 					defaultComposeTemplate: settings.defaultComposeTemplate ?? DEFAULT_SETTINGS.defaultComposeTemplate,
 				labelFilterMode: settings.labelFilterMode ?? DEFAULT_SETTINGS.labelFilterMode,
 				honorProxyLabels: settings.honorProxyLabels ?? DEFAULT_SETTINGS.honorProxyLabels,
-				showImageChangelogLinks: settings.showImageChangelogLinks ?? DEFAULT_SETTINGS.showImageChangelogLinks
+				showImageChangelogLinks: settings.showImageChangelogLinks ?? DEFAULT_SETTINGS.showImageChangelogLinks,
+				protectScannerImages: settings.protectScannerImages ?? DEFAULT_SETTINGS.protectScannerImages
 				});
 			}
 		} catch {
@@ -210,7 +213,8 @@ function createSettingsStore() {
 					defaultComposeTemplate: updatedSettings.defaultComposeTemplate ?? DEFAULT_SETTINGS.defaultComposeTemplate,
 				labelFilterMode: updatedSettings.labelFilterMode ?? DEFAULT_SETTINGS.labelFilterMode,
 				honorProxyLabels: updatedSettings.honorProxyLabels ?? DEFAULT_SETTINGS.honorProxyLabels,
-				showImageChangelogLinks: updatedSettings.showImageChangelogLinks ?? DEFAULT_SETTINGS.showImageChangelogLinks
+				showImageChangelogLinks: updatedSettings.showImageChangelogLinks ?? DEFAULT_SETTINGS.showImageChangelogLinks,
+				protectScannerImages: updatedSettings.protectScannerImages ?? DEFAULT_SETTINGS.protectScannerImages
 				});
 			}
 		} catch (error) {
@@ -458,6 +462,13 @@ function createSettingsStore() {
 			update((current) => {
 				const newSettings = { ...current, honorProxyLabels: value };
 				saveSettings({ honorProxyLabels: value });
+				return newSettings;
+			});
+		},
+		setProtectScannerImages: (value: boolean) => {
+			update((current) => {
+				const newSettings = { ...current, protectScannerImages: value };
+				saveSettings({ protectScannerImages: value });
 				return newSettings;
 			});
 		},

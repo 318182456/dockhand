@@ -669,31 +669,9 @@ async function runScannerContainerCore(
 		// detection failure — no regression for stock Docker hosts.
 		hostSocketPath = await detectRemoteSocketPath(envId);
 		console.log(`[Scanner] Remote scan via Hawser (${connectionType}) - detected socket path: ${hostSocketPath}`);
-	} else if (connectionType === 'direct' && env?.host) {
-		// Direct TCP to a remote daemon (e.g. Docker over TCP, Podman over TCP).
-		// The scanner container is created on the REMOTE daemon, not on
-		// Dockhand's host. Binding "/var/run/docker.sock" from Dockhand's
-		// host into a remote-daemon container is nonsense — on remote Docker
-		// it silently creates an empty dir (scans fall back to registry); on
-		// rootless Podman it errors with "mkdir /var/run/docker.sock:
-		// permission denied" (#1076, #1011). Instead, tell the scanner to
-		// talk to the daemon over the same TCP endpoint Dockhand uses.
-		// `host.containers.internal` resolves to the daemon's host from
-		// inside the scanner container on both Docker (with `host-gateway`)
-		// and Podman (built-in).
-		scannerDockerHost = `tcp://host.containers.internal:${env.port}`;
-		// Add the host-gateway mapping so Docker honours the hostname.
-		// Podman recognises host.containers.internal natively; the extra
-		// mapping is harmless there.
-		scannerExtraHosts = [
-			...(scannerExtraHosts ?? []),
-			'host.containers.internal:host-gateway'
-		];
-		console.log(
-			`[Scanner] Direct TCP env (${env.protocol ?? 'http'}://${env.host}:${env.port}) - DOCKER_HOST=${scannerDockerHost} (#1076, #1011)`
-		);
 	} else {
-		// Local socket — detect host socket path (handles rootless Docker)
+		// Local socket — handles rootless Docker and direct-TCP envs
+		// (the latter via the same socket bind; see #1195, #1076).
 		hostSocketPath = getHostDockerSocket();
 		console.log(`[Scanner] Local socket scan (${connectionType || 'default'}) - detected host Docker socket: ${hostSocketPath}`);
 

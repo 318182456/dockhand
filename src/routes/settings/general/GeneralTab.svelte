@@ -309,7 +309,7 @@ services:
 										<Tooltip.Trigger>
 											<HelpCircle class="w-3.5 h-3.5 text-muted-foreground" />
 										</Tooltip.Trigger>
-										<Tooltip.Content side="top" class="max-w-xs">
+										<Tooltip.Content side="top" class="w-96 max-w-[90vw]">
 											<p>Surface a release-notes link next to the image name on rows with updates available. The link is resolved from the image's <code>org.opencontainers.image.source</code> label, from the <code>ghcr.io</code> registry path, or from an explicit <code>dockhand.changelog.url</code> label override.</p>
 										</Tooltip.Content>
 									</Tooltip.Root>
@@ -345,7 +345,7 @@ services:
 										<Tooltip.Trigger>
 											<HelpCircle class="w-3.5 h-3.5 text-muted-foreground" />
 										</Tooltip.Trigger>
-										<Tooltip.Content side="top" class="max-w-xs">
+										<Tooltip.Content side="top" class="w-96 max-w-[90vw]">
 											<p>Shows internal container ports (from EXPOSE directives) that are not published to the host. These appear in the container list with an amber badge to distinguish them from published port mappings.</p>
 										</Tooltip.Content>
 									</Tooltip.Root>
@@ -367,8 +367,8 @@ services:
 										<Tooltip.Trigger>
 											<HelpCircle class="w-3.5 h-3.5 text-muted-foreground" />
 										</Tooltip.Trigger>
-										<Tooltip.Content side="top" class="max-w-xs">
-											<p>Parse <code>traefik.http.routers.&lt;name&gt;.rule</code> and <code>pangolin.proxy-resources.&lt;name&gt;.full-domain</code> labels and surface the resulting URLs as clickable pills next to ports. When off, only explicit <code>dockhand.url</code> labels are shown.</p>
+										<Tooltip.Content side="top" class="w-96 max-w-[90vw]">
+											<p>Parse <code>traefik.http.routers.&lt;name&gt;.rule</code>, <code>pangolin.public-resources.&lt;name&gt;.full-domain</code>, and <code>pangolin.private-resources.&lt;name&gt;.full-domain</code> labels and surface the resulting URLs as clickable pills next to ports. When off, only explicit <code>dockhand.url</code> labels are shown.</p>
 										</Tooltip.Content>
 									</Tooltip.Root>
 									<TogglePill
@@ -882,9 +882,6 @@ services:
 								onchange={handleScannerCleanupEnabledChange}
 								disabled={!$canAccess('settings', 'edit')}
 							/>
-						</div>
-						<p class="text-xs text-muted-foreground">Remove cached vulnerability databases to reclaim disk space</p>
-						<div class="flex items-center gap-2 mt-2">
 							<div class="ml-auto">
 								<CronEditor
 									value={scannerCleanupCron}
@@ -893,6 +890,29 @@ services:
 								/>
 							</div>
 						</div>
+						<p class="text-xs text-muted-foreground">Remove cached vulnerability databases to reclaim disk space</p>
+					</div>
+					<div class="space-y-1 pt-2 border-t">
+						<div class="flex items-center gap-3">
+							<Label>Protect scanner images from prune</Label>
+							<Tooltip.Root>
+								<Tooltip.Trigger>
+									<HelpCircle class="w-3.5 h-3.5 text-muted-foreground" />
+								</Tooltip.Trigger>
+								<Tooltip.Content side="top" class="w-96 max-w-[90vw]">
+									<p>When ON, "Prune all unused" skips Dockhand's grype and trivy scanner images so the next scan doesn't have to re-pull them (and re-download the ~100MB vuln database). When OFF, prune behaves like vanilla Docker and may remove them.</p>
+								</Tooltip.Content>
+							</Tooltip.Root>
+							<TogglePill
+								checked={$appSettings.protectScannerImages}
+								onchange={(checked) => {
+									appSettings.setProtectScannerImages(checked);
+									toast.success(checked ? 'Scanner images will be skipped during prune' : 'Scanner images will be pruned with everything else');
+								}}
+								disabled={!$canAccess('settings', 'edit')}
+							/>
+						</div>
+						<p class="text-xs text-muted-foreground">Skip grype and trivy images during "Prune all unused"</p>
 					</div>
 				</Card.Content>
 			</Card.Root>
