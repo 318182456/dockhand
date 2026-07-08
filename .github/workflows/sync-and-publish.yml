@@ -71,7 +71,7 @@ jobs:
           # 动态中文化与依赖版本精确锁定
           node scripts/translate.js
           # 官方库中只包含 bun.lock 而没有 package-lock.json，但 Dockerfile 里硬编码了 COPY package-lock.json，我们需要生成一个以防止 Docker 报错
-          npm install --package-lock-only
+          npm install --package-lock-only --legacy-peer-deps
 
       # 移除了 QEMU 步骤，因为我们不再编译 arm64，只编 amd64
 
