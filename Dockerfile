@@ -82,7 +82,7 @@ RUN MAKEFLAGS="-j$(nproc)" npm ci \
 
 # Copy source code and build
 COPY . .
-RUN npx svelte-kit sync && npm run build
+RUN npm install --legacy-peer-deps && npx svelte-kit sync && npm run build
 
 # Production dependencies only
 # Preserve better-sqlite3 native addon (no prebuilds exist for Node 24 ABI 137)
