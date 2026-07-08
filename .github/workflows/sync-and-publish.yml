@@ -70,9 +70,9 @@ jobs:
         run: |
           # 动态中文化：在构建 Docker 前直接在 CI 运行区修改源码文件
           # 这样 Dockerfile 中 COPY . . 时拷贝的就是翻译后的中文源码
-          # node scripts/translate.js
+          node scripts/translate.js
           # 临时移除 package.json 依赖中的 ^ 和 ~，锁定在开发时精确版本，防止版本漂移导致 Docker 内编译失败
-          node -e "const fs = require('fs'); const p = JSON.parse(fs.readFileSync('package.json', 'utf8')); const clean = (obj) => { if(!obj) return; for(let k in obj) { if(obj[k].startsWith('^') || obj[k].startsWith('~')) obj[k] = obj[k].replace(/^[\^~]/, ''); } }; clean(p.dependencies); clean(p.devDependencies); clean(p.overrides); fs.writeFileSync('package.json', JSON.stringify(p, null, 2));"
+          node -e 'const fs = require("fs"); const p = JSON.parse(fs.readFileSync("package.json", "utf8")); const clean = (obj) => { if(!obj) return; for(let k in obj) { if(typeof obj[k] === "string" && (obj[k].startsWith("^") || obj[k].startsWith("~"))) obj[k] = obj[k].replace(/^[\^~]/, ""); } }; clean(p.dependencies); clean(p.devDependencies); clean(p.overrides); fs.writeFileSync("package.json", JSON.stringify(p, null, 2));'
           # 官方库中只包含 bun.lock 而没有 package-lock.json，但 Dockerfile 里硬编码了 COPY package-lock.json，我们需要生成一个以防止 Docker 报错
           npm install --package-lock-only || true
 
