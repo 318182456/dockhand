@@ -72,8 +72,6 @@ jobs:
           node scripts/translate.js
           # 官方库中只包含 bun.lock 而没有 package-lock.json，但 Dockerfile 里硬编码了 COPY package-lock.json，我们需要生成一个以防止 Docker 报错
           npm install --package-lock-only --legacy-peer-deps
-          # 临时移除 Dockerfile 中的 --ignore-scripts 限制，允许 Docker 内部安装 esbuild 等转译器的平台二进制，修复 TS 预处理器在干净容器中失效的底层环境问题
-          sed -i 's/npm ci --ignore-scripts/npm ci/g' Dockerfile
 
       # 移除了 QEMU 步骤，因为我们不再编译 arm64，只编 amd64
 
