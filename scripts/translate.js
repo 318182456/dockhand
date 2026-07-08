@@ -5,6 +5,29 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// 临时修改 package.json，锁定依赖版本范围前缀（^和~）以防止漂移
+try {
+  const packageJsonPath = path.join(__dirname, '../package.json');
+  if (fs.existsSync(packageJsonPath)) {
+    const p = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    const clean = (obj) => {
+      if (!obj) return;
+      for (let k in obj) {
+        if (typeof obj[k] === 'string' && (obj[k].startsWith('^') || obj[k].startsWith('~'))) {
+          obj[k] = obj[k].replace(/^[\^~]/, '');
+        }
+      }
+    };
+    clean(p.dependencies);
+    clean(p.devDependencies);
+    clean(p.overrides);
+    fs.writeFileSync(packageJsonPath, JSON.stringify(p, null, 2), 'utf8');
+    console.log('已临时锁定 package.json 中的依赖版本');
+  }
+} catch (err) {
+  console.error('临时锁定 package.json 版本失败:', err);
+}
+
 const dictPath = path.join(__dirname, 'translation-dict.json');
 const srcDir = path.join(__dirname, '../src');
 
