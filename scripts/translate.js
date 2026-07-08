@@ -28,6 +28,10 @@ try {
   console.error('临时锁定 package.json 版本失败:', err);
 }
 
+// 临时隔离测试：锁定版本后直接正常退出，跳过对 src 源码的中文替换
+console.log('--- 隔离测试：跳过中文翻译替换，只进行依赖锁定 ---');
+process.exit(0);
+
 const dictPath = path.join(__dirname, 'translation-dict.json');
 const srcDir = path.join(__dirname, '../src');
 
