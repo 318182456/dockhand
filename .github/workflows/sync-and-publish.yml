@@ -23,28 +23,50 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Add Upstream Remote and Sync
+        id: sync
         run: |
+          # 获取本地已有的最新 tag
+          LOCAL_LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "本地最新的 tag: $LOCAL_LATEST_TAG"
+
           # 绑定上游官方库并拉取
           git remote add upstream https://github.com/Finsys/dockhand.git || true
+          git fetch upstream --tags
           git fetch upstream
           
+          # 获取 fetch 后的最新 tag
+          NEW_LATEST_TAG=$(git describe --tags $(git rev-list --tags --max-count=1) 2>/dev/null || echo "")
+          echo "上游最新的 tag: $NEW_LATEST_TAG"
+
+          if [ -n "$NEW_LATEST_TAG" ] && [ "$NEW_LATEST_TAG" != "$LOCAL_LATEST_TAG" ]; then
+            echo "检测到上游发布了最新的 tag: $NEW_LATEST_TAG"
+            echo "has_new_tag=true" >> $GITHUB_OUTPUT
+            echo "latest_tag=$NEW_LATEST_TAG" >> $GITHUB_OUTPUT
+          else
+            echo "未检测到上游有新 tag"
+            echo "has_new_tag=false" >> $GITHUB_OUTPUT
+            # 如果没有新 tag，但本地可能落后了 tag，为了保持一致也输出最新 tag（如果是手动触发可以使用）
+            echo "latest_tag=$NEW_LATEST_TAG" >> $GITHUB_OUTPUT
+          fi
+
           # 将上游主分支合并到当前主分支（如果存在冲突，采用上游为准或自动合并）
           git merge upstream/main --no-edit || {
             echo "合并冲突，尝试以 upstream 状态强行覆盖或标记解决"
             git merge --abort
-            # 如需强行以官方为准，可以取消下面这行的注释
-            # git reset --hard upstream/main
           }
           
-          # 推送同步后的更新回本仓库
+          # 推送同步后的更新回本仓库，并同步 tags
           git push origin HEAD:main
+          git push origin --tags
 
       - name: Set up Node.js
+        if: github.event_name == 'workflow_dispatch' || steps.sync.outputs.has_new_tag == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 24
 
       - name: Run Translate Script and Generate Lockfile
+        if: github.event_name == 'workflow_dispatch' || steps.sync.outputs.has_new_tag == 'true'
         run: |
           # 动态中文化：在构建 Docker 前直接在 CI 运行区修改源码文件
           # 这样 Dockerfile 中 COPY . . 时拷贝的就是翻译后的中文源码
@@ -55,10 +77,11 @@ jobs:
       # 移除了 QEMU 步骤，因为我们不再编译 arm64，只编 amd64
 
       - name: Set up Docker Buildx
+        if: github.event_name == 'workflow_dispatch' || steps.sync.outputs.has_new_tag == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
-        if: ${{ env.DOCKER_USERNAME != '' }}
+        if: (github.event_name == 'workflow_dispatch' || steps.sync.outputs.has_new_tag == 'true') && env.DOCKER_USERNAME != ''
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
@@ -67,6 +90,7 @@ jobs:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
 
       - name: Log in to GitHub Container Registry
+        if: github.event_name == 'workflow_dispatch' || steps.sync.outputs.has_new_tag == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -74,6 +98,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels) for Docker
+        if: github.event_name == 'workflow_dispatch' || steps.sync.outputs.has_new_tag == 'true'
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -82,9 +107,11 @@ jobs:
             ${{ secrets.DOCKER_USERNAME }}/dockhand
           tags: |
             type=raw,value=latest
+            type=raw,value=${{ steps.sync.outputs.latest_tag }},enable=${{ steps.sync.outputs.latest_tag != '' }}
             type=sha,format=short
 
       - name: Build and push Docker image
+        if: github.event_name == 'workflow_dispatch' || steps.sync.outputs.has_new_tag == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
