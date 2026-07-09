@@ -78,11 +78,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy package files and install dependencies
 COPY package.json package-lock.json ./
 RUN MAKEFLAGS="-j$(nproc)" npm ci \
-    && MAKEFLAGS="-j$(nproc)" npm rebuild better-sqlite3 argon2
+    && MAKEFLAGS="-j$(nproc)" npm rebuild better-sqlite3 argon2 esbuild
 
 # Copy source code and build
 COPY . .
-RUN npm install --legacy-peer-deps && npx svelte-kit sync && npm run build
+RUN npx svelte-kit sync && npm run build
 
 # Production dependencies only
 # Preserve better-sqlite3 native addon (no prebuilds exist for Node 24 ABI 137)
