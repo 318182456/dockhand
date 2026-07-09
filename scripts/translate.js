@@ -9,6 +9,21 @@ const __dirname = path.dirname(__filename);
 const dictPath = path.join(__dirname, 'translation-dict.json');
 const srcDir = path.join(__dirname, '../src');
 
+// 动态修改 svelte.config.js 以启用 { script: true }，解决 Linux 构建下 TS 预处理失效的问题
+try {
+  const svelteConfigPath = path.join(__dirname, '../svelte.config.js');
+  if (fs.existsSync(svelteConfigPath)) {
+    let content = fs.readFileSync(svelteConfigPath, 'utf8');
+    if (content.includes('preprocess: vitePreprocess()')) {
+      content = content.replace('preprocess: vitePreprocess()', 'preprocess: vitePreprocess({ script: true })');
+      fs.writeFileSync(svelteConfigPath, content, 'utf8');
+      console.log('已动态将 svelte.config.js 中的 preprocess 配置修改为 vitePreprocess({ script: true })');
+    }
+  }
+} catch (err) {
+  console.error('动态修改 svelte.config.js 失败:', err);
+}
+
 // 1. 读取并解析字典
 let dict = {};
 try {
