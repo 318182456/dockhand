@@ -82,7 +82,8 @@ RUN MAKEFLAGS="-j$(nproc)" npm ci \
 
 # Copy source code and build
 COPY . .
-RUN npx svelte-kit sync && npm run build
+RUN node -e "const {transformSync}=require('esbuild');const r=transformSync('const x:number=1',{loader:'ts'});console.log('[esbuild-check] OK:',r.code.trim())" \
+    && npx svelte-kit sync && npm run build
 
 # Production dependencies only
 # Preserve better-sqlite3 native addon (no prebuilds exist for Node 24 ABI 137)
