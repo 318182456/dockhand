@@ -82,7 +82,7 @@ RUN MAKEFLAGS="-j$(nproc)" npm ci \
 
 # Copy source code and build
 COPY . .
-RUN node -e "const {transformSync}=require('esbuild');const r=transformSync('const x:number=1',{loader:'ts'});console.log('[esbuild-check] OK:',r.code.trim())" \
+RUN rm -rf .svelte-kit \
     && npx svelte-kit sync && npm run build
 
 # Production dependencies only

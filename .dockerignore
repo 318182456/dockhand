@@ -1,0 +1,10 @@
+.git
+.github
+node_modules
+.svelte-kit
+build
+data
+.history
+.env*
+*.db
+*.log
