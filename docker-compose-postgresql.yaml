@@ -9,7 +9,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
   dockhand:
-    image: fnsys/dockhand:latest
+    image: ghcr.io/318182456/dockhand:latest
     ports:
       - 3000:3000
     environment:

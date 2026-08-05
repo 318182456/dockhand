@@ -1,1 +1,0 @@
-ALTER TABLE "git_stacks" ADD COLUMN "synced_files" text;

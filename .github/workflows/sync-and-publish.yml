@@ -1,81 +1,56 @@
 name: Sync, Translate and Publish Docker
 
+# 方案:中文化 overlay(运行时 DOM 翻译)
+# 不再合并上游源码、不再自行编译前端。检测到上游发布新 tag 后,
+# 直接基于官方镜像 fnsys/dockhand:<tag> 注入翻译脚本并重新发布。
+# 本仓库源码仅作参考存档,构建不依赖它;已构建版本记录在 VERSION 文件。
+
 on:
-  workflow_dispatch: # 支持手动触发构建
+  workflow_dispatch: # 手动触发:强制重建当前最新上游版本(即使 VERSION 已一致)
   schedule:
-    - cron: '0 */6 * * *' # 每 6 小时自动运行检测一次上游更新
+    - cron: '0 */6 * * *' # 每 6 小时检测一次上游 release
 
 permissions:
   contents: write
   packages: write
 
 jobs:
-  sync-and-publish:
+  build-zh-overlay:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Forked Repo
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure Git
+      - name: Detect upstream release
+        id: up
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Add Upstream Remote and Sync
-        id: sync
-        run: |
-          # 绑定上游官方库并拉取
-          git remote add upstream https://github.com/Finsys/dockhand.git || true
-          git fetch upstream --tags
-
-          # 用 VERSION 文件判断是否有新版本：它反映的是"代码是否真正合进来"，
-          # 而不是全库 tag 扫描（fetch --tags 会把未合并的 tag 也拉下来，导致误判，见历史 bug）
-          LOCAL_VERSION=$(cat VERSION)
-          UPSTREAM_VERSION=$(git show upstream/main:VERSION)
-          echo "本地 VERSION: $LOCAL_VERSION，上游 VERSION: $UPSTREAM_VERSION"
-
-          # 合并上游主分支。如有冲突必须让 job 失败并人工介入，
-          # 绝不能 merge --abort 后继续推送/构建（会造成"tag 已推、代码没合"的假同步状态）
-          git merge upstream/main --no-edit
-
-          # 合并成功后才推送代码与 tags（顺序不能颠倒，否则 tag 先行污染判断）
-          git push origin HEAD:main
-          git push origin --tags
-
-          if [ -n "$UPSTREAM_VERSION" ] && [ "$UPSTREAM_VERSION" != "$LOCAL_VERSION" ]; then
-            echo "检测到上游新版本: $UPSTREAM_VERSION"
-            echo "has_new_tag=true" >> $GITHUB_OUTPUT
-          else
-            echo "上游无新版本"
-            echo "has_new_tag=false" >> $GITHUB_OUTPUT
+          # 取上游版本号最大的 tag(ls-remote 不拉对象,轻量且不污染本仓库)
+          LATEST=$(git ls-remote --refs --tags https://github.com/Finsys/dockhand.git 'v*' \
+            | awk -F/ '{print $NF}' | sort -V | tail -n1)
+          CURRENT=$(cat VERSION)
+          echo "上游最新: ${LATEST},已构建: ${CURRENT}"
+          if [ -z "$LATEST" ]; then
+            echo "错误: 无法获取上游 tag"
+            exit 1
           fi
-          echo "latest_tag=$UPSTREAM_VERSION" >> $GITHUB_OUTPUT
-
-      - name: Set up Node.js
-        if: github.event_name == 'workflow_dispatch' || steps.sync.outputs.has_new_tag == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: Run Translate Script and Generate Lockfile
-        if: github.event_name == 'workflow_dispatch' || steps.sync.outputs.has_new_tag == 'true'
-        run: |
-          # 动态中文化与依赖版本精确锁定
-          node scripts/translate.js
-          # 官方库中只包含 bun.lock 而没有 package-lock.json，但 Dockerfile 里硬编码了 COPY package-lock.json，我们需要生成一个以防止 Docker 报错
-          npm install --package-lock-only --legacy-peer-deps
-
-      # 移除了 QEMU 步骤，因为我们不再编译 arm64，只编 amd64
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          if [ "$LATEST" != "$CURRENT" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || [ "$LATEST" != "$CURRENT" ]; then
+            echo "build=true" >> $GITHUB_OUTPUT
+          else
+            echo "build=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Set up Docker Buildx
-        if: github.event_name == 'workflow_dispatch' || steps.sync.outputs.has_new_tag == 'true'
+        if: steps.up.outputs.build == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
-        if: (github.event_name == 'workflow_dispatch' || steps.sync.outputs.has_new_tag == 'true') && env.DOCKER_USERNAME != ''
+        if: steps.up.outputs.build == 'true' && env.DOCKER_USERNAME != ''
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
@@ -84,7 +59,7 @@ jobs:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name == 'workflow_dispatch' || steps.sync.outputs.has_new_tag == 'true'
+        if: steps.up.outputs.build == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -92,7 +67,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels) for Docker
-        if: github.event_name == 'workflow_dispatch' || steps.sync.outputs.has_new_tag == 'true'
+        if: steps.up.outputs.build == 'true'
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -101,17 +76,29 @@ jobs:
             ${{ secrets.DOCKER_USERNAME }}/dockhand
           tags: |
             type=raw,value=latest
-            type=raw,value=${{ steps.sync.outputs.latest_tag }},enable=${{ steps.sync.outputs.latest_tag != '' }}
-            type=sha,format=short
+            type=raw,value=${{ steps.up.outputs.latest }}
 
-      - name: Build and push Docker image
-        if: github.event_name == 'workflow_dispatch' || steps.sync.outputs.has_new_tag == 'true'
+      - name: Build and push zh overlay image
+        if: steps.up.outputs.build == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: Dockerfile.zh
+          build-args: |
+            UPSTREAM_VERSION=${{ steps.up.outputs.latest }}
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # overlay 构建只有秒级的注入操作,官方镜像层由 registry 缓存,无需 gha cache
+
+      - name: Record built version
+        # 镜像推送成功后才更新 VERSION,失败时下个周期自动重试
+        if: steps.up.outputs.build == 'true' && steps.up.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "${{ steps.up.outputs.latest }}" > VERSION
+          git add VERSION
+          git commit -m "chore: 发布 ${{ steps.up.outputs.latest }} 中文化镜像"
+          git push origin HEAD:main

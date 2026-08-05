@@ -1,6 +1,6 @@
 services:
   dockhand:
-    image: fnsys/dockhand:latest
+    image: ghcr.io/318182456/dockhand:latest
     container_name: dockhand
     restart: unless-stopped
     ports:
