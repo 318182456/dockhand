@@ -8,7 +8,7 @@
 	import { TogglePill, ToggleSwitch } from '$lib/components/ui/toggle-pill';
 	import CronEditor from '$lib/components/cron-editor.svelte';
 	import TimezoneSelector from '$lib/components/TimezoneSelector.svelte';
-	import { Eye, Bell, Database, Calendar, ShieldCheck, FileText, AlertTriangle, HelpCircle, Globe, Activity, Clock, Info, Save, RotateCcw, LayoutDashboard, Tags, ChevronRight, ChevronDown } from 'lucide-svelte';
+	import { Eye, Bell, Database, Calendar, ShieldCheck, FileText, AlertTriangle, HelpCircle, Globe, Activity, Clock, Info, Save, RotateCcw, LayoutDashboard, Tags, Archive, ChevronRight, ChevronDown } from 'lucide-svelte';
 	import CodeEditor from '$lib/components/CodeEditor.svelte';
 	import { appSettings, type DateFormat, type DownloadFormat, type EventCollectionMode, type LabelFilterMode } from '$lib/stores/settings';
 	import { canAccess, authStore } from '$lib/stores/auth';
@@ -24,6 +24,7 @@
 	let highlightUpdates = $derived($appSettings.highlightUpdates);
 	let compactPorts = $derived($appSettings.compactPorts);
 	let showExposedPorts = $derived($appSettings.showExposedPorts);
+	let showGitCommitHash = $derived($appSettings.showGitCommitHash);
 	let honorProxyLabels = $derived($appSettings.honorProxyLabels);
 	let showImageChangelogLinks = $derived($appSettings.showImageChangelogLinks);
 	let showWhatsNew = $derived($appSettings.showWhatsNew);
@@ -91,6 +92,7 @@ services:
 	let eventCollectionMode = $derived($appSettings.eventCollectionMode);
 	let eventPollInterval = $derived($appSettings.eventPollInterval);
 	let metricsCollectionInterval = $derived($appSettings.metricsCollectionInterval);
+	let defaultBackupImage = $derived($appSettings.defaultBackupImage);
 
 	let clearingCache = $state(false);
 
@@ -269,6 +271,14 @@ services:
 			toast.success(`Metrics interval: ${selected.value / 1000}s`);
 		}
 	}
+
+	function handleBackupImageBlur(e: Event) {
+		const value = (e.target as HTMLInputElement).value.trim();
+		if (value && value !== defaultBackupImage) {
+			appSettings.setDefaultBackupImage(value);
+			toast.success('Backup image updated');
+		}
+	}
 </script>
 
 <div class="flex-1 min-h-0 overflow-y-auto">
@@ -401,6 +411,28 @@ services:
 									/>
 								</div>
 								<p class="text-xs text-muted-foreground">Display internal container ports in the container list grid</p>
+							</div>
+							<div class="space-y-1">
+								<div class="flex items-center gap-3">
+									<Label>Show git commit hash</Label>
+									<Tooltip.Root>
+										<Tooltip.Trigger>
+											<HelpCircle class="w-3.5 h-3.5 text-muted-foreground" />
+										</Tooltip.Trigger>
+										<Tooltip.Content side="top" class="w-96 max-w-[90vw]">
+											<p>Shows the deployed short commit hash on the Git badge in the stacks list source column, with the full hash, repo URL and branch in a tooltip.</p>
+										</Tooltip.Content>
+									</Tooltip.Root>
+									<TogglePill
+										checked={showGitCommitHash}
+										onchange={(checked) => {
+											appSettings.setShowGitCommitHash(checked);
+											toast.success(checked ? 'Showing git commit hash on stack badges' : 'Git commit hash hidden');
+										}}
+										disabled={!$canAccess('settings', 'edit')}
+									/>
+								</div>
+								<p class="text-xs text-muted-foreground">Display the deployed commit hash on the Git source badge in the stacks list</p>
 							</div>
 							<div class="space-y-1">
 								<div class="flex items-center gap-3">
@@ -970,15 +1002,17 @@ services:
 								onchange={handleScannerCleanupEnabledChange}
 								disabled={!$canAccess('settings', 'edit')}
 							/>
-							<div class="ml-auto">
+						</div>
+						<p class="text-xs text-muted-foreground">Remove cached vulnerability databases to reclaim disk space</p>
+						{#if scannerCleanupEnabled}
+							<div class="mt-2">
 								<CronEditor
 									value={scannerCleanupCron}
 									onchange={handleScannerCleanupCronChange}
-									disabled={!$canAccess('settings', 'edit') || !scannerCleanupEnabled}
+									disabled={!$canAccess('settings', 'edit')}
 								/>
 							</div>
-						</div>
-						<p class="text-xs text-muted-foreground">Remove cached vulnerability databases to reclaim disk space</p>
+						{/if}
 					</div>
 					<div class="space-y-1 pt-2 border-t">
 						<div class="flex items-center gap-3">

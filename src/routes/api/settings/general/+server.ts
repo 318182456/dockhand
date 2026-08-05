@@ -35,6 +35,12 @@ import { authorize } from '$lib/server/authorize';
 import { refreshSystemJobs } from '$lib/server/scheduler';
 import { sendToEventSubprocess, sendToMetricsSubprocess } from '$lib/server/subprocess-manager';
 import { DEFAULT_GRYPE_IMAGE, DEFAULT_TRIVY_IMAGE } from '$lib/server/scanner';
+import { DEFAULT_HELPER_IMAGE } from '$lib/server/backups/restic';
+
+// The real engine default (version-pinned, `-baseline`-aware). NOT a hardcoded
+// `:latest` — that would advertise a floating tag the backup engine never uses and,
+// if the user saved it, pin them to a helper that never re-pulls (see restic.ts).
+const DEFAULT_BACKUP_IMAGE = DEFAULT_HELPER_IMAGE;
 
 export type TimeFormat = '12h' | '24h';
 export type DateFormat = 'MM/DD/YYYY' | 'DD/MM/YYYY' | 'YYYY-MM-DD' | 'DD.MM.YYYY';
@@ -82,6 +88,8 @@ export interface GeneralSettings {
 	compactPorts: boolean;
 	// Show exposed (internal) ports
 	showExposedPorts: boolean;
+	// Show the deployed git commit hash in the stack source badge
+	showGitCommitHash: boolean;
 	// Log timestamp formatting
 	formatLogTimestamps: boolean;
 	// External stack paths
@@ -95,6 +103,8 @@ export interface GeneralSettings {
 	defaultComposeTemplate: string;
 	// Label filter mode
 	labelFilterMode: 'any' | 'all';
+	// Backup image
+	defaultBackupImage: string;
 	// Whether to surface URLs inferred from reverse-proxy labels — currently
 	// Traefik (traefik.http.routers.*) and Pangolin
 	// (pangolin.{public,private}-resources.*).
@@ -133,6 +143,7 @@ const DEFAULT_SETTINGS: Omit<GeneralSettings, 'scheduleRetentionDays' | 'eventRe
 	metricsCollectionInterval: 30000,
 	compactPorts: false,
 	showExposedPorts: false,
+	showGitCommitHash: false,
 	formatLogTimestamps: false,
 	lightTheme: 'default',
 	darkTheme: 'default',
@@ -170,7 +181,8 @@ services:
 # networks:
 #   default:
 #     driver: bridge
-`
+`,
+	defaultBackupImage: DEFAULT_BACKUP_IMAGE
 };
 
 const VALID_LIGHT_THEMES = ['default', 'catppuccin', 'rose-pine', 'nord', 'solarized', 'gruvbox', 'alucard', 'github', 'material', 'atom-one'];
@@ -244,6 +256,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			editorFont,
 			compactPorts,
 			showExposedPorts,
+			showGitCommitHash,
 			formatLogTimestamps,
 			externalStackPaths,
 			primaryStackLocation,
@@ -251,6 +264,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			defaultTrivyImage,
 			defaultComposeTemplate,
 			labelFilterMode,
+			defaultBackupImage,
 			honorProxyLabels,
 			showImageChangelogLinks,
 			showWhatsNew,
@@ -292,6 +306,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			getSetting('theme_editor_font'),
 			getSetting('compact_ports'),
 			getSetting('show_exposed_ports'),
+			getSetting('show_git_commit_hash'),
 			getSetting('format_log_timestamps'),
 			getExternalStackPaths(),
 			getPrimaryStackLocation(),
@@ -299,6 +314,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			getSetting('default_trivy_image'),
 			getSetting('default_compose_template'),
 			getSetting('label_filter_mode'),
+			getSetting('default_backup_image'),
 			getSetting('honor_proxy_labels'),
 			getSetting('show_image_changelog_links'),
 			getSetting('show_whats_new'),
@@ -343,6 +359,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			terminalFont: terminalFont ?? DEFAULT_SETTINGS.terminalFont,
 			editorFont: editorFont ?? DEFAULT_SETTINGS.editorFont,
 			compactPorts: compactPorts ?? DEFAULT_SETTINGS.compactPorts,
+			showGitCommitHash: showGitCommitHash ?? DEFAULT_SETTINGS.showGitCommitHash,
 			showExposedPorts: showExposedPorts ?? DEFAULT_SETTINGS.showExposedPorts,
 			formatLogTimestamps: formatLogTimestamps ?? DEFAULT_SETTINGS.formatLogTimestamps,
 			externalStackPaths,
@@ -351,6 +368,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			defaultTrivyImage: defaultTrivyImage ?? DEFAULT_TRIVY_IMAGE,
 			defaultComposeTemplate: defaultComposeTemplate ?? DEFAULT_SETTINGS.defaultComposeTemplate,
 			labelFilterMode: labelFilterMode ?? DEFAULT_SETTINGS.labelFilterMode,
+			defaultBackupImage: defaultBackupImage ?? DEFAULT_BACKUP_IMAGE,
 			honorProxyLabels: honorProxyLabels ?? DEFAULT_SETTINGS.honorProxyLabels,
 			showImageChangelogLinks: showImageChangelogLinks ?? DEFAULT_SETTINGS.showImageChangelogLinks,
 			showWhatsNew: showWhatsNew ?? DEFAULT_SETTINGS.showWhatsNew,
@@ -375,7 +393,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 
 	try {
 		const body = await request.json();
-		const { confirmDestructive, showStoppedContainers, highlightUpdates, coloredActionButtons, actionIconSize, timeFormat, dateFormat, downloadFormat, defaultGrypeArgs, defaultTrivyArgs, scheduleRetentionDays, eventRetentionDays, scheduleCleanupCron, eventCleanupCron, scheduleCleanupEnabled, eventCleanupEnabled, scannerCleanupCron, scannerCleanupEnabled, logBufferSizeKb, logMaxLines, defaultTimezone, eventCollectionMode, eventPollInterval, metricsCollectionInterval, lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, editorFont, compactPorts, showExposedPorts, formatLogTimestamps, externalStackPaths, primaryStackLocation, defaultGrypeImage, defaultTrivyImage, defaultComposeTemplate, labelFilterMode, honorProxyLabels, showImageChangelogLinks, animateIcons, protectScannerImages, showWhatsNew, defaultScannerNetworkMode, defaultScannerDns } = body;
+		const { confirmDestructive, showStoppedContainers, highlightUpdates, coloredActionButtons, actionIconSize, timeFormat, dateFormat, downloadFormat, defaultGrypeArgs, defaultTrivyArgs, scheduleRetentionDays, eventRetentionDays, scheduleCleanupCron, eventCleanupCron, scheduleCleanupEnabled, eventCleanupEnabled, scannerCleanupCron, scannerCleanupEnabled, logBufferSizeKb, logMaxLines, defaultTimezone, eventCollectionMode, eventPollInterval, metricsCollectionInterval, lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, editorFont, compactPorts, showExposedPorts, showGitCommitHash, formatLogTimestamps, externalStackPaths, primaryStackLocation, defaultGrypeImage, defaultTrivyImage, defaultComposeTemplate, labelFilterMode, defaultBackupImage, honorProxyLabels, showImageChangelogLinks, animateIcons, protectScannerImages, showWhatsNew, defaultScannerNetworkMode, defaultScannerDns } = body;
 
 		if (confirmDestructive !== undefined) {
 			await setSetting('confirm_destructive', confirmDestructive);
@@ -486,6 +504,9 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 		if (editorFont !== undefined && VALID_EDITOR_FONTS.includes(editorFont)) {
 			await setSetting('theme_editor_font', editorFont);
 		}
+		if (showGitCommitHash !== undefined) {
+			await setSetting('show_git_commit_hash', showGitCommitHash);
+		}
 		if (compactPorts !== undefined) {
 			await setSetting('compact_ports', compactPorts);
 		}
@@ -520,6 +541,9 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 		}
 		if (labelFilterMode !== undefined && (labelFilterMode === 'any' || labelFilterMode === 'all')) {
 			await setSetting('label_filter_mode', labelFilterMode);
+		}
+		if (defaultBackupImage !== undefined && typeof defaultBackupImage === 'string') {
+			await setSetting('default_backup_image', defaultBackupImage);
 		}
 		if (honorProxyLabels !== undefined && typeof honorProxyLabels === 'boolean') {
 			await setSetting('honor_proxy_labels', honorProxyLabels);
@@ -586,6 +610,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			editorFontVal,
 			compactPortsVal,
 			showExposedPortsVal,
+			showGitCommitHashVal,
 			formatLogTimestampsVal,
 			externalStackPathsVal,
 			primaryStackLocationVal,
@@ -593,6 +618,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			defaultTrivyImageVal,
 			defaultComposeTemplateVal,
 			labelFilterModeVal,
+			defaultBackupImageVal,
 			honorProxyLabelsVal,
 			showImageChangelogLinksVal,
 			showWhatsNewVal,
@@ -634,6 +660,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			getSetting('theme_editor_font'),
 			getSetting('compact_ports'),
 			getSetting('show_exposed_ports'),
+			getSetting('show_git_commit_hash'),
 			getSetting('format_log_timestamps'),
 			getExternalStackPaths(),
 			getPrimaryStackLocation(),
@@ -641,6 +668,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			getSetting('default_trivy_image'),
 			getSetting('default_compose_template'),
 			getSetting('label_filter_mode'),
+			getSetting('default_backup_image'),
 			getSetting('honor_proxy_labels'),
 			getSetting('show_image_changelog_links'),
 			getSetting('show_whats_new'),
@@ -686,6 +714,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			editorFont: editorFontVal ?? DEFAULT_SETTINGS.editorFont,
 			compactPorts: compactPortsVal ?? DEFAULT_SETTINGS.compactPorts,
 			showExposedPorts: showExposedPortsVal ?? DEFAULT_SETTINGS.showExposedPorts,
+			showGitCommitHash: showGitCommitHashVal ?? DEFAULT_SETTINGS.showGitCommitHash,
 			formatLogTimestamps: formatLogTimestampsVal ?? DEFAULT_SETTINGS.formatLogTimestamps,
 			externalStackPaths: externalStackPathsVal,
 			primaryStackLocation: primaryStackLocationVal,
@@ -693,6 +722,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			defaultTrivyImage: defaultTrivyImageVal ?? DEFAULT_TRIVY_IMAGE,
 			defaultComposeTemplate: defaultComposeTemplateVal ?? DEFAULT_SETTINGS.defaultComposeTemplate,
 			labelFilterMode: labelFilterModeVal ?? DEFAULT_SETTINGS.labelFilterMode,
+			defaultBackupImage: defaultBackupImageVal ?? DEFAULT_BACKUP_IMAGE,
 			honorProxyLabels: honorProxyLabelsVal ?? DEFAULT_SETTINGS.honorProxyLabels,
 			protectScannerImages: protectScannerImagesVal ?? DEFAULT_SETTINGS.protectScannerImages,
 			showImageChangelogLinks: showImageChangelogLinksVal ?? DEFAULT_SETTINGS.showImageChangelogLinks,

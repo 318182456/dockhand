@@ -38,6 +38,7 @@
 		TextCursorInput
 	} from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
+	import { LoadingState } from '$lib/components/ui/loading-state';
 	import { formatDateTime, appSettings } from '$lib/stores/settings';
 
 	interface FileEntry {
@@ -52,7 +53,7 @@
 		readonly?: boolean;
 	}
 
-	type BrowserMode = 'container' | 'volume';
+	type BrowserMode = 'container' | 'volume' | 'snapshot';
 	type SortField = 'name' | 'size' | 'modified' | 'type';
 	type SortDirection = 'asc' | 'desc';
 
@@ -75,6 +76,9 @@
 		selectFilter?: RegExp;
 		// Callback when a file is selected (in selectMode)
 		onFileSelect?: (path: string, name: string) => void;
+		// Snapshot browsing mode
+		snapshotId?: string;
+		destinationId?: number;
 	}
 
 	let {
@@ -86,7 +90,9 @@
 		onUsageChange,
 		selectMode = false,
 		selectFilter,
-		onFileSelect
+		onFileSelect,
+		snapshotId,
+		destinationId
 	}: Props = $props();
 
 	// For volume mode, track whether volume is in use (controls editing ability)
@@ -96,12 +102,13 @@
 	let volumeHelperId = $state<string | null>(null);
 
 	// Determine mode based on which prop is provided
-	const mode: BrowserMode = $derived(volumeName ? 'volume' : 'container');
+	const mode: BrowserMode = $derived(snapshotId ? 'snapshot' : volumeName ? 'volume' : 'container');
 	const isVolumeMode = $derived(mode === 'volume');
+	const isSnapshotMode = $derived(mode === 'snapshot');
 
-	// Effective canEdit: for containers, use the prop; for volumes, only allow if not in use
+	// Effective canEdit: snapshots are always read-only; volumes only if not in use
 	const effectiveCanEdit = $derived(
-		isVolumeMode ? (canEdit && !volumeIsInUse) : canEdit
+		isSnapshotMode ? false : isVolumeMode ? (canEdit && !volumeIsInUse) : canEdit
 	);
 
 	// Effective container ID for file operations (use helper container for volume mode)
@@ -145,6 +152,11 @@
 	// Editor/Viewer state
 	let editingFile = $state<{ name: string; path: string; content: string } | null>(null);
 	let viewingFile = $state<{ name: string; path: string; content: string } | null>(null);
+	// Preview-only loading flag (distinct from loadingFile, which also covers
+	// edit/download): drives the "Loading preview…" overlay so a slow restic dump
+	// from a remote repo (B2/S3) shows immediate feedback in-place.
+	let loadingPreview = $state(false);
+	let previewingName = $state('');
 	let editorContent = $state('');
 	let loadingFile = $state(false);
 	// True when the editor buffer differs from the loaded file (unsaved changes).
@@ -368,16 +380,22 @@
 	async function openFileForView(entry: FileEntry) {
 		const filePath = currentPath === '/' ? `/${entry.name}` : `${currentPath}/${entry.name}`;
 		loadingFile = true;
+		loadingPreview = true;
+		previewingName = entry.name;
 
 		try {
-			const params = new URLSearchParams({ path: filePath });
-			if (envId) params.set('env', envId.toString());
-
 			let res: Response;
-			if (isVolumeMode) {
-				res = await fetch(`/api/volumes/${encodeURIComponent(volumeName!)}/browse/content?${params}`);
+			if (isSnapshotMode) {
+				const params = new URLSearchParams({ destinationId: String(destinationId), path: filePath });
+				res = await fetch(`/api/backup/snapshots/${snapshotId}/dump?${params}`);
 			} else {
-				res = await fetch(`/api/containers/${effectiveContainerId}/files/content?${params}`);
+				const params = new URLSearchParams({ path: filePath });
+				if (envId) params.set('env', envId.toString());
+				if (isVolumeMode) {
+					res = await fetch(`/api/volumes/${encodeURIComponent(volumeName!)}/browse/content?${params}`);
+				} else {
+					res = await fetch(`/api/containers/${effectiveContainerId}/files/content?${params}`);
+				}
 			}
 			const data = await res.json();
 
@@ -394,6 +412,7 @@
 			toast.error(err.message || 'Failed to open file');
 		} finally {
 			loadingFile = false;
+			loadingPreview = false;
 		}
 	}
 
@@ -704,7 +723,11 @@
 			let res: Response;
 			let data: any;
 
-			if (isVolumeMode) {
+			if (isSnapshotMode) {
+				const snapshotParams = new URLSearchParams({ destinationId: String(destinationId), path });
+				res = await fetch(`/api/backup/snapshots/${snapshotId}/browse?${snapshotParams}`);
+				data = await res.json();
+			} else if (isVolumeMode) {
 				res = await fetch(`/api/volumes/${encodeURIComponent(volumeName!)}/browse?${params}`);
 				data = await res.json();
 
@@ -738,7 +761,26 @@
 			}
 
 			currentPath = data.path || path;
-			entries = data.entries || [];
+			// Map snapshot entries to match FileEntry interface
+			if (isSnapshotMode) {
+				// restic ls --json gives permissions as a 10-char ls string
+				// ("-rw-------": leading type char + 9 rwx). permissionsToOctal wants
+				// the 9 rwx chars, so drop the leading type char. Owner/group come as
+				// user/group names when the source had /etc/passwd, else numeric uid/gid.
+				entries = (data.entries || []).map((e: any) => ({
+					name: e.name,
+					type: e.type === 'dir' ? 'directory' : e.type,
+					size: e.size || 0,
+					permissions: typeof e.permissions === 'string' && e.permissions.length >= 10
+						? e.permissions.slice(1)
+						: '',
+					owner: e.user || (e.uid != null ? String(e.uid) : ''),
+					group: e.group || (e.gid != null ? String(e.gid) : ''),
+					modified: e.mtime || ''
+				}));
+			} else {
+				entries = data.entries || [];
+			}
 		} catch (err: any) {
 			error = err.message;
 			entries = [];
@@ -778,17 +820,20 @@
 	function downloadFile(entry: FileEntry) {
 		const filePath =
 			currentPath === '/' ? `/${entry.name}` : `${currentPath}/${entry.name}`;
-		const params = new URLSearchParams({
-			path: filePath,
-			format: $appSettings.downloadFormat
-		});
-		if (envId) params.set('env', envId.toString());
 
 		let url: string;
-		if (isVolumeMode) {
-			url = `/api/volumes/${encodeURIComponent(volumeName!)}/export?${params}`;
+		if (isSnapshotMode) {
+			const params = new URLSearchParams({ destinationId: String(destinationId), path: filePath, download: '1' });
+			if (entry.type === 'directory') params.set('type', 'directory');
+			url = `/api/backup/snapshots/${snapshotId}/dump?${params}`;
 		} else {
-			url = `/api/containers/${effectiveContainerId}/files/download?${params}`;
+			const params = new URLSearchParams({ path: filePath, format: $appSettings.downloadFormat });
+			if (envId) params.set('env', envId.toString());
+			if (isVolumeMode) {
+				url = `/api/volumes/${encodeURIComponent(volumeName!)}/export?${params}`;
+			} else {
+				url = `/api/containers/${effectiveContainerId}/files/download?${params}`;
+			}
 		}
 		window.open(url, '_blank');
 	}
@@ -841,8 +886,24 @@
 		return currentPath.split('/').filter(Boolean);
 	});
 
+	// Track all identity props so the effect re-fires when they change
 	$effect(() => {
-		loadDirectory(initialPath);
+		// Read reactive values to establish dependencies
+		const _mode = mode;
+		const _snap = snapshotId;
+		const _dest = destinationId;
+		const _cont = containerId;
+		const _vol = volumeName;
+		const _path = initialPath;
+
+		// Guard: don't load if required props for the mode are missing
+		if (_mode === 'snapshot' && (!_snap || !_dest)) return;
+		if (_mode === 'container' && !_cont) return;
+
+		currentPath = _path;
+		entries = [];
+		error = null;
+		loadDirectory(_path);
 	});
 </script>
 
@@ -948,10 +1009,7 @@
 	<!-- File list -->
 	<div class="flex-1 overflow-auto relative">
 		{#if loading}
-			<div class="absolute inset-0 bg-background/80 flex items-center justify-center z-10">
-				<Loader2 class="w-5 h-5 animate-spin mr-2 text-muted-foreground" />
-				<span class="text-sm text-muted-foreground">Loading...</span>
-			</div>
+			<LoadingState class="absolute inset-0 z-10 bg-background/80" label="Loading files..." />
 		{/if}
 		{#if error}
 			<div class="flex items-center justify-center p-4 h-full">
@@ -969,8 +1027,12 @@
 				<span class="text-sm">{showHiddenFiles ? 'Directory is empty' : 'No visible files (hidden files are hidden)'}</span>
 			</div>
 		{:else if displayEntries().length > 0}
-			<Table.Root class="text-xs">
-				<Table.Header>
+			<!-- Bare <table>, not Table.Root: Table.Root wraps the table in an
+			     overflow-x-auto div that becomes the sticky scroll context, so the
+			     sticky <thead> would anchor to that non-scrolling wrapper instead of
+			     the flex-1 overflow-auto above and never stick. Same pattern DataGrid uses. -->
+			<table class="w-full caption-bottom text-sm text-xs">
+				<Table.Header class="sticky top-0 z-10 bg-background">
 					<Table.Row>
 						<Table.Head class="w-[35%] py-1.5 text-xs font-medium">
 							<button type="button" class="flex items-center gap-1 hover:text-foreground" onclick={() => toggleSort('name')}>
@@ -984,8 +1046,11 @@
 								<svelte:component this={getSortIcon('size')} class="w-3 h-3 opacity-50" />
 							</button>
 						</Table.Head>
-						<Table.Head class="w-[18%] py-1.5 text-xs font-medium">
+						<Table.Head class="w-[14%] py-1.5 text-xs font-medium">
 							<span class="text-muted-foreground">Permissions</span>
+						</Table.Head>
+						<Table.Head class="w-[12%] py-1.5 text-xs font-medium">
+							<span class="text-muted-foreground">Owner</span>
 						</Table.Head>
 						<Table.Head class="w-[14%] py-1.5 text-xs font-medium">
 							<button type="button" class="flex items-center gap-1 hover:text-foreground" onclick={() => toggleSort('modified')}>
@@ -993,7 +1058,7 @@
 								<svelte:component this={getSortIcon('modified')} class="w-3 h-3 opacity-50" />
 							</button>
 						</Table.Head>
-						<Table.Head class="w-[25%] py-1.5 text-xs font-medium text-right">Actions</Table.Head>
+						<Table.Head class="w-[21%] py-1.5 text-xs font-medium text-right">Actions</Table.Head>
 					</Table.Row>
 				</Table.Header>
 				<Table.Body>
@@ -1039,9 +1104,16 @@
 							<Table.Cell class="text-muted-foreground py-1">
 								{entry.type === 'directory' ? '-' : formatSize(entry.size)}
 							</Table.Cell>
-							<Table.Cell class="text-muted-foreground py-1 font-mono text-2xs">
+							<Table.Cell class="text-muted-foreground py-1 font-mono text-xs">
 								<span title={entry.permissions}>{permissionsToOctal(entry.permissions)}</span>
 								<span class="ml-1 opacity-60">{entry.permissions}</span>
+							</Table.Cell>
+							<Table.Cell class="text-muted-foreground py-1 font-mono text-xs">
+								{#if entry.owner}
+									<span title={entry.group ? `${entry.owner}:${entry.group}` : entry.owner}>{entry.owner}{#if entry.group && entry.group !== entry.owner}<span class="opacity-60">:{entry.group}</span>{/if}</span>
+								{:else}
+									<span class="opacity-40">-</span>
+								{/if}
 							</Table.Cell>
 							<Table.Cell class="text-muted-foreground py-1">
 								{formatDate(entry.modified)}
@@ -1130,7 +1202,7 @@
 						</Table.Row>
 					{/each}
 				</Table.Body>
-			</Table.Root>
+			</table>
 		{/if}
 	</div>
 
@@ -1195,7 +1267,9 @@
 	</Dialog.Root>
 
 	<!-- File Viewer Overlay -->
-	{#if viewingFile}
+	{#if loadingPreview && !viewingFile}
+		<LoadingState class="absolute inset-0 z-10 bg-background" label={`Loading preview${previewingName ? ` - ${previewingName}` : ''}...`} />
+	{:else if viewingFile}
 		<div class="absolute inset-0 bg-background flex flex-col z-10">
 			<div class="flex items-center justify-between p-2 border-b bg-muted/30">
 				<div class="flex items-center gap-2 text-xs">

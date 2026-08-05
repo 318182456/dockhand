@@ -16,8 +16,9 @@ import { registerSchedule } from '$lib/server/scheduler';
 import { auditGitStack } from '$lib/server/audit';
 import { createJobResponse } from '$lib/server/sse';
 
-// Stack name validation: must start with alphanumeric, can contain alphanumeric, hyphens, underscores
-const STACK_NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
+// Stack name validation: Docker Compose requires lowercase; must start with a
+// letter or number, and contain only lowercase letters, numbers, hyphens, underscores
+const STACK_NAME_REGEX = /^[a-z0-9][a-z0-9_-]*$/;
 
 export const GET: RequestHandler = async ({ url, cookies }) => {
 	const auth = await authorize(cookies);
@@ -58,13 +59,18 @@ export const POST: RequestHandler = async (event) => {
 
 		const trimmedStackName = data.stackName.trim();
 		if (!STACK_NAME_REGEX.test(trimmedStackName)) {
-			return json({ error: 'Stack name must start with a letter or number, and contain only letters, numbers, hyphens, and underscores' }, { status: 400 });
+			return json({ error: 'Stack name must be lowercase, start with a letter or number, and contain only letters, numbers, hyphens, and underscores' }, { status: 400 });
 		}
 
 		// Check for name conflicts with existing stacks (regular/external/git)
 		const existing = await getStackSource(trimmedStackName, data.environmentId || null);
 		if (existing) {
 			return json({ error: 'A stack with this name already exists on this environment' }, { status: 409 });
+		}
+
+		// A secret is mandatory when the webhook is enabled.
+		if (data.webhookEnabled && !data.webhookSecret?.trim()) {
+			return json({ error: 'A webhook secret is required when the webhook is enabled' }, { status: 400 });
 		}
 
 		// Either repositoryId or new repo details (url, branch) must be provided

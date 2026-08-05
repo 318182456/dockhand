@@ -14,37 +14,7 @@
 	import type { VulnerabilityCriteria } from '$lib/components/VulnerabilityCriteriaSelector.svelte';
 
 	// Parse shell command respecting quotes
-	function parseShellCommand(cmd: string): string[] {
-		const args: string[] = [];
-		let current = '';
-		let inQuotes = false;
-		let quoteChar = '';
-
-		for (let i = 0; i < cmd.length; i++) {
-			const char = cmd[i];
-
-			if ((char === '"' || char === "'") && !inQuotes) {
-				inQuotes = true;
-				quoteChar = char;
-			} else if (char === quoteChar && inQuotes) {
-				inQuotes = false;
-				quoteChar = '';
-			} else if (char === ' ' && !inQuotes) {
-				if (current) {
-					args.push(current);
-					current = '';
-				}
-			} else {
-				current += char;
-			}
-		}
-
-		if (current) {
-			args.push(current);
-		}
-
-		return args;
-	}
+	import { parseShellCommand } from '$lib/utils/shell';
 
 	interface ConfigSet {
 		id: number;
@@ -603,12 +573,12 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(isOpen) => isOpen && focusFirstInput()}>
-	<Dialog.Content class="max-w-4xl w-full h-[85vh] p-0 flex flex-col overflow-hidden !zoom-in-0 !zoom-out-0" showCloseButton={false}>
+	<Dialog.Content class="max-w-4xl w-[calc(100%-2rem)] h-[85vh] p-0 flex flex-col overflow-hidden !zoom-in-0 !zoom-out-0" showCloseButton={false}>
 		<Dialog.Header class="px-5 py-4 border-b bg-muted/30 shrink-0 sticky top-0 z-10">
 			<Dialog.Title class="text-base font-semibold">
 				Create new container
 				{#if $currentEnvironment}
-					<span class="font-medium">on <span class="text-amber-600 dark:text-amber-400">{$currentEnvironment.name}</span></span>
+					<span class="font-semibold">on <span class="text-amber-600 dark:text-amber-400">{$currentEnvironment.name}</span></span>
 				{/if}
 			</Dialog.Title>
 			<button

@@ -13,7 +13,6 @@
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import * as Popover from '$lib/components/ui/popover';
-	import { formatBytes } from '$lib/utils/format';
 	import MultiSelectFilter from '$lib/components/MultiSelectFilter.svelte';
 	import { Play, Square, Trash2, Plus, ArrowBigDown, Search, Pencil, ExternalLink, GitBranch, RefreshCw, Loader2, FileCode, FileText, FileOutput, Box, RotateCcw, ScrollText, Terminal, Eye, Network, HardDrive, Heart, HeartPulse, HeartOff, ChevronsUpDown, ChevronsDownUp, Rocket, AlertTriangle, X, Layers, Pause, CircleDashed, Skull, FolderOpen, Variable, Clock, RotateCw, Import, Ship, Cable, LayoutPanelLeft, Rows3, GripVertical, Globe, CircleArrowUp, NotepadText } from 'lucide-svelte';
 	import { formatPorts } from '$lib/utils/port-format';
@@ -26,6 +25,7 @@
 	import BatchOperationModal from '$lib/components/BatchOperationModal.svelte';
 	import type { ComposeStackInfo, ContainerStats } from '$lib/types';
 	import StackModal from './StackModal.svelte';
+	import GitSourceBadge from './GitSourceBadge.svelte';
 	import GitStackModal from './GitStackModal.svelte';
 	import ImportStackModal from './ImportStackModal.svelte';
 	import GitDeployProgressPopover from './GitDeployProgressPopover.svelte';
@@ -45,11 +45,16 @@
 	import type { DataGridSortState } from '$lib/components/data-grid/types';
 	import { ErrorDialog } from '$lib/components/ui/error-dialog';
 	import { formatHostPortUrl } from '$lib/utils/url';
+	import { formatBytes, formatBytesCompact } from '$lib/utils/format';
 
 	type SortField = 'name' | 'containers' | 'status' | 'cpu' | 'memory';
 	type SortDirection = 'asc' | 'desc';
 
 	let stacks = $state<ComposeStackInfo[]>([]);
+	// Container IDs whose last update check failed this session (e.g. registry
+	// rate-limited), with the error text for the tooltip — session-only (#1255).
+	let failedUpdateCheckIds = $state<Set<string>>(new Set());
+	let failedUpdateCheckErrors = $state<Map<string, string>>(new Map());
 	let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; repository?: any; gitStack?: any }>>({});
 	let stackEnvVarCounts = $state<Record<string, number>>({});
 	let gitStacks = $state<any[]>([]);
@@ -66,6 +71,7 @@
 	let showImportModal = $state(false);
 	let editingStackName = $state('');
 	let stackModalReadonly = $state(false);
+	let stackModalGitInfo = $state<{ commit?: string; url?: string; branch?: string } | null>(null);
 	let editingGitStack = $state<any>(null);
 	let envId = $state<number | null>(null);
 
@@ -488,7 +494,15 @@
 	let confirmRemoveContainerId = $state<string | null>(null);
 
 	// Operation error state (for stack and container operations)
-	let operationError = $state<{ id: string; title: string; message: string } | null>(null);
+	let operationError = $state<{ id: string; message: string } | null>(null);
+
+	// Inline operation-error auto-dismiss timers, cleared on destroy.
+	let pendingTimeouts: ReturnType<typeof setTimeout>[] = [];
+	function clearErrorAfterDelay(id: string) {
+		pendingTimeouts.push(setTimeout(() => {
+			if (operationError?.id === id) operationError = null;
+		}, 5000));
+	}
 
 	// Error dialog state (for showing detailed errors)
 	let errorDialogData = $state<{ title: string; message: string } | null>(null);
@@ -750,6 +764,30 @@
 			loading = false;
 		}
 	});
+
+	// True when any stack container shows an update-available (amber) or
+	// check-failed (red) indicator — gates the "dismiss indicators" button.
+	const hasUpdateIndicators = $derived(
+		stacks.some((s) => s.updatesAvailable) || failedUpdateCheckIds.size > 0
+	);
+
+	// Dismiss both the amber "update available" and red "check failed" indicators.
+	// Update-available lives in the shared pending_container_updates table (same
+	// one the containers page clears); failed-check state is session-only.
+	async function dismissStackUpdates() {
+		const id = $currentEnvironment?.id;
+		if (!id) return;
+		try {
+			const response = await fetch(`/api/containers/pending-updates?env=${id}`, { method: 'DELETE' });
+			if (response.ok) {
+				failedUpdateCheckIds = new Set();
+				failedUpdateCheckErrors = new Map();
+				await fetchStacks();
+			}
+		} catch {
+			toast.error('Failed to clear update indicators');
+		}
+	}
 
 	async function fetchStacks() {
 		// Show loading skeleton on initial load or when environment changes, but not on refreshes
@@ -1056,6 +1094,12 @@
 	function viewGitStack(name: string) {
 		editingStackName = name;
 		stackModalReadonly = true;
+		const src = getStackSource(name);
+		stackModalGitInfo = {
+			commit: src?.gitStack?.lastCommit || undefined,
+			url: src?.repository?.url || undefined,
+			branch: src?.repository?.branch || undefined
+		};
 		showEditModal = true;
 	}
 
@@ -1341,6 +1385,10 @@
 
 	// Cleanup on component destroy
 	onDestroy(() => {
+		// Clear pending inline-error dismiss timers
+		pendingTimeouts.forEach(clearTimeout);
+		pendingTimeouts = [];
+
 		// Clear polling intervals
 		if (stacksInterval) {
 			clearInterval(stacksInterval);
@@ -1413,8 +1461,27 @@
 			<CheckUpdatesButton
 				{envId}
 				hasPendingUpdates={stacks.some((s) => s.updatesAvailable)}
-				onComplete={() => fetchStacks()}
+				onComplete={(result) => {
+					// Record failed checks so stack containers show a "check failed" state
+					// instead of masquerading as up to date (#1255). Session-only.
+					const failed = result.failed ?? [];
+					failedUpdateCheckIds = new Set(failed.map((f) => f.containerId));
+					failedUpdateCheckErrors = new Map(failed.map((f) => [f.containerId, f.error]));
+					fetchStacks();
+				}}
 			/>
+			{#if hasUpdateIndicators}
+				<Button
+					size="sm"
+					variant="ghost"
+					onclick={dismissStackUpdates}
+					class="h-8 gap-1 text-muted-foreground hover:text-destructive"
+					title="Dismiss all update indicators"
+				>
+					<X class="w-3.5 h-3.5" />
+					Clear
+				</Button>
+			{/if}
 			<Button
 				size="sm"
 				variant="outline"
@@ -1637,7 +1704,7 @@
 									{stackEnvVarCounts[stack.name]}
 								</span>
 							</Tooltip.Trigger>
-							<Tooltip.Content class="whitespace-nowrap">
+							<Tooltip.Content>
 								{stackEnvVarCounts[stack.name]} environment variable{stackEnvVarCounts[stack.name] !== 1 ? 's' : ''} configured
 							</Tooltip.Content>
 						</Tooltip.Root>
@@ -1690,7 +1757,7 @@
 										<span class="text-2xs font-medium text-amber-500 leading-none">{stack.updateCount}</span>
 									{/if}
 								</Tooltip.Trigger>
-								<Tooltip.Content class="whitespace-nowrap">
+								<Tooltip.Content>
 									External stack - update possible for individual containers only.
 								</Tooltip.Content>
 							</Tooltip.Root>
@@ -1699,21 +1766,19 @@
 					</span>
 				{:else if column.id === 'source'}
 					{#if source.sourceType === 'git'}
-						<span
-							class="inline-flex items-center justify-center gap-1 text-xs px-1.5 py-0.5 rounded-sm bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200 shadow-sm min-w-[5.5rem]"
-							title={source.repository ? `${source.repository.url} (${source.repository.branch})` : 'Deployed from Git repository'}
-						>
-							<GitBranch class="w-3 h-3" />
-							Git
-						</span>
+						<GitSourceBadge {source} />
 					{:else if source.sourceType === 'internal'}
-						<span
-							class="inline-flex items-center justify-center gap-1 text-xs px-1.5 py-0.5 rounded-sm bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 shadow-sm min-w-[5.5rem]"
-							title="Managed by Dockhand"
-						>
-							<FileCode class="w-3 h-3" />
-							Internal
-						</span>
+						<Tooltip.Root>
+							<Tooltip.Trigger>
+								<span
+									class="inline-flex items-center justify-center gap-1 text-xs px-1.5 py-0.5 rounded-sm bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 shadow-sm min-w-[5.5rem]"
+								>
+									<FileCode class="w-3 h-3" />
+									Internal
+								</span>
+							</Tooltip.Trigger>
+							<Tooltip.Content>Managed by Dockhand</Tooltip.Content>
+						</Tooltip.Root>
 					{:else}
 						<Tooltip.Root>
 							<Tooltip.Trigger>
@@ -1724,7 +1789,7 @@
 									Untracked
 								</span>
 							</Tooltip.Trigger>
-							<Tooltip.Content class="whitespace-nowrap">
+							<Tooltip.Content>
 								Compose file location unknown. Click the stack name or edit button to locate it.
 							</Tooltip.Content>
 						</Tooltip.Root>
@@ -1748,40 +1813,70 @@
 				{:else if column.id === 'containers'}
 					<div class="flex items-center gap-1">
 						{#if getContainerStateCounts(stack).running}
-							<span class="inline-flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400" title="Running">
-								<Play class="w-3.5 h-3.5" />
-								<span class="text-xs font-medium">{getContainerStateCounts(stack).running}</span>
-							</span>
+							<Tooltip.Root>
+								<Tooltip.Trigger>
+									<span class="inline-flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400">
+										<Play class="w-3.5 h-3.5" />
+										<span class="text-xs font-medium">{getContainerStateCounts(stack).running}</span>
+									</span>
+								</Tooltip.Trigger>
+								<Tooltip.Content>Running</Tooltip.Content>
+							</Tooltip.Root>
 						{/if}
 						{#if getContainerStateCounts(stack).exited}
-							<span class="inline-flex items-center gap-0.5 text-red-600 dark:text-red-400" title="Exited">
-								<Square class="w-3.5 h-3.5" />
-								<span class="text-xs font-medium">{getContainerStateCounts(stack).exited}</span>
-							</span>
+							<Tooltip.Root>
+								<Tooltip.Trigger>
+									<span class="inline-flex items-center gap-0.5 text-red-600 dark:text-red-400">
+										<Square class="w-3.5 h-3.5" />
+										<span class="text-xs font-medium">{getContainerStateCounts(stack).exited}</span>
+									</span>
+								</Tooltip.Trigger>
+								<Tooltip.Content>Exited</Tooltip.Content>
+							</Tooltip.Root>
 						{/if}
 						{#if getContainerStateCounts(stack).paused}
-							<span class="inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400" title="Paused">
-								<Pause class="w-3.5 h-3.5" />
-								<span class="text-xs font-medium">{getContainerStateCounts(stack).paused}</span>
-							</span>
+							<Tooltip.Root>
+								<Tooltip.Trigger>
+									<span class="inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400">
+										<Pause class="w-3.5 h-3.5" />
+										<span class="text-xs font-medium">{getContainerStateCounts(stack).paused}</span>
+									</span>
+								</Tooltip.Trigger>
+								<Tooltip.Content>Paused</Tooltip.Content>
+							</Tooltip.Root>
 						{/if}
 						{#if getContainerStateCounts(stack).restarting}
-							<span class="inline-flex items-center gap-0.5 text-blue-600 dark:text-blue-400" title="Restarting">
-								<span class="w-3.5 h-3.5 flex items-center justify-center"><RefreshCw class="w-3.5 h-3.5 animate-spin" /></span>
-								<span class="text-xs font-medium">{getContainerStateCounts(stack).restarting}</span>
-							</span>
+							<Tooltip.Root>
+								<Tooltip.Trigger>
+									<span class="inline-flex items-center gap-0.5 text-blue-600 dark:text-blue-400">
+										<span class="w-3.5 h-3.5 flex items-center justify-center"><RefreshCw class="w-3.5 h-3.5 animate-spin" /></span>
+										<span class="text-xs font-medium">{getContainerStateCounts(stack).restarting}</span>
+									</span>
+								</Tooltip.Trigger>
+								<Tooltip.Content>Restarting</Tooltip.Content>
+							</Tooltip.Root>
 						{/if}
 						{#if getContainerStateCounts(stack).created}
-							<span class="inline-flex items-center gap-0.5 text-slate-500 dark:text-slate-400" title="Created">
-								<CircleDashed class="w-3.5 h-3.5" />
-								<span class="text-xs font-medium">{getContainerStateCounts(stack).created}</span>
-							</span>
+							<Tooltip.Root>
+								<Tooltip.Trigger>
+									<span class="inline-flex items-center gap-0.5 text-slate-500 dark:text-slate-400">
+										<CircleDashed class="w-3.5 h-3.5" />
+										<span class="text-xs font-medium">{getContainerStateCounts(stack).created}</span>
+									</span>
+								</Tooltip.Trigger>
+								<Tooltip.Content>Created</Tooltip.Content>
+							</Tooltip.Root>
 						{/if}
 						{#if getContainerStateCounts(stack).dead}
-							<span class="inline-flex items-center gap-0.5 text-rose-700 dark:text-rose-400" title="Dead">
-								<Skull class="w-3.5 h-3.5" />
-								<span class="text-xs font-medium">{getContainerStateCounts(stack).dead}</span>
-							</span>
+							<Tooltip.Root>
+								<Tooltip.Trigger>
+									<span class="inline-flex items-center gap-0.5 text-rose-700 dark:text-rose-400">
+										<Skull class="w-3.5 h-3.5" />
+										<span class="text-xs font-medium">{getContainerStateCounts(stack).dead}</span>
+									</span>
+								</Tooltip.Trigger>
+								<Tooltip.Content>Dead</Tooltip.Content>
+							</Tooltip.Root>
 						{/if}
 						{#if stack.containers.length === 0}
 							<span class="text-xs text-muted-foreground">-</span>
@@ -1802,7 +1897,7 @@
 					{@const stats = getStackStats(stack)}
 					<div class="text-right">
 						{#if stats}
-							<span class="text-xs font-mono text-muted-foreground" title="{formatBytes(stats.memoryUsage)} / {formatBytes(stats.memoryLimit)}">{formatBytes(stats.memoryUsage)}<span class="text-muted-foreground/50">/{formatBytes(stats.memoryLimit, 0)}</span></span>
+							<span class="text-xs font-mono text-muted-foreground" title="{formatBytes(stats.memoryUsage)} / {formatBytes(stats.memoryLimit)}">{formatBytesCompact(stats.memoryUsage)}<span class="text-muted-foreground/50">/{formatBytesCompact(stats.memoryLimit, 0)}</span></span>
 						{:else if stack.status === 'running' || stack.status === 'partial' || stack.status === 'restarting'}
 							<span class="text-xs text-muted-foreground/50">...</span>
 						{:else}
@@ -1814,7 +1909,7 @@
 					<div class="text-right whitespace-nowrap">
 						{#if stats}
 							<span class="text-xs font-mono text-muted-foreground" title="↓{formatBytes(stats.networkRx)} received / ↑{formatBytes(stats.networkTx)} sent">
-								<span class="text-2xs text-blue-400">↓</span>{formatBytes(stats.networkRx, 0)} <span class="text-2xs text-orange-400">↑</span>{formatBytes(stats.networkTx, 0)}
+								<span class="text-2xs text-blue-400">↓</span>{formatBytesCompact(stats.networkRx, 0)} <span class="text-2xs text-orange-400">↑</span>{formatBytesCompact(stats.networkTx, 0)}
 							</span>
 						{:else if stack.status === 'running' || stack.status === 'partial' || stack.status === 'restarting'}
 							<span class="text-xs text-muted-foreground/50">...</span>
@@ -1827,7 +1922,7 @@
 					<div class="text-right whitespace-nowrap">
 						{#if stats}
 							<span class="text-xs font-mono text-muted-foreground" title="↓{formatBytes(stats.blockRead)} read / ↑{formatBytes(stats.blockWrite)} written">
-								<span class="text-2xs text-green-400">r</span>{formatBytes(stats.blockRead, 0)} <span class="text-2xs text-yellow-400">w</span>{formatBytes(stats.blockWrite, 0)}
+								<span class="text-2xs text-green-400">r</span>{formatBytesCompact(stats.blockRead, 0)} <span class="text-2xs text-yellow-400">w</span>{formatBytesCompact(stats.blockWrite, 0)}
 							</span>
 						{:else if stack.status === 'running' || stack.status === 'partial' || stack.status === 'restarting'}
 							<span class="text-xs text-muted-foreground/50">...</span>
@@ -2098,6 +2193,22 @@
 													{/if}
 												{/if}
 											</span>
+										{:else if failedUpdateCheckIds.has(container.id)}
+											<Tooltip.Root>
+												<Tooltip.Trigger>
+													<AlertTriangle class="w-3.5 h-3.5 shrink-0 text-red-500 cursor-help" />
+												</Tooltip.Trigger>
+												<Tooltip.Content side="right" class="w-72 p-3">
+													<div class="space-y-1.5">
+														<p class="font-medium text-sm flex items-center gap-1.5 whitespace-nowrap">
+															<AlertTriangle class="w-4 h-4 text-red-500 shrink-0" />
+															Update check failed
+														</p>
+														<p class="text-muted-foreground text-xs break-words">{failedUpdateCheckErrors.get(container.id) ?? 'Could not query registry'}</p>
+														<p class="text-muted-foreground text-xs">Update status unknown — often a Docker Hub rate limit. Try again later.</p>
+													</div>
+												</Tooltip.Content>
+											</Tooltip.Root>
 										{/if}
 										<span class="flex-1"></span>
 										{#if container.health}
@@ -2153,7 +2264,7 @@
 											<div class="space-y-0">
 												<div class="flex justify-between text-2xs">
 													<span class="text-muted-foreground">Mem</span>
-													<span class="font-mono text-muted-foreground">{stats ? formatBytes(stats.memoryUsage) : '-'}</span>
+													<span class="font-mono text-muted-foreground">{stats ? formatBytesCompact(stats.memoryUsage) : '-'}</span>
 												</div>
 												{#if history?.mem && history.mem.length >= 2}
 													<svg class="w-full h-4" viewBox="0 0 60 16" preserveAspectRatio="none">
@@ -2168,7 +2279,7 @@
 											<div class="space-y-0">
 												<div class="flex justify-between text-2xs">
 													<span class="text-muted-foreground">Net</span>
-													<span class="font-mono text-muted-foreground">{stats ? formatBytes(stats.networkRx + stats.networkTx) : '-'}</span>
+													<span class="font-mono text-muted-foreground">{stats ? formatBytesCompact(stats.networkRx + stats.networkTx) : '-'}</span>
 												</div>
 												{#if history?.netRx && history.netRx.length >= 2}
 													<svg class="w-full h-4" viewBox="0 0 60 16" preserveAspectRatio="none">
@@ -2183,7 +2294,7 @@
 											<div class="space-y-0">
 												<div class="flex justify-between text-2xs">
 													<span class="text-muted-foreground">Disk</span>
-													<span class="font-mono text-muted-foreground">{stats ? formatBytes(stats.blockRead + stats.blockWrite) : '-'}</span>
+													<span class="font-mono text-muted-foreground">{stats ? formatBytesCompact(stats.blockRead + stats.blockWrite) : '-'}</span>
 												</div>
 												{#if history?.diskR && history.diskR.length >= 2}
 													<svg class="w-full h-4" viewBox="0 0 60 16" preserveAspectRatio="none">
@@ -2522,10 +2633,12 @@
 	mode="edit"
 	stackName={editingStackName}
 	readonly={stackModalReadonly}
+	gitInfo={stackModalGitInfo}
 	onClose={() => {
 		showEditModal = false;
 		editingStackName = '';
 		stackModalReadonly = false;
+		stackModalGitInfo = null;
 	}}
 	onSuccess={fetchStacks}
 />

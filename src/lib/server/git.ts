@@ -15,6 +15,9 @@ import {
 	type GitStackWithRepo
 } from './db';
 import { deployStack, getStackDir } from './stacks';
+import { sendEventNotification } from './notifications';
+import { buildBasicAuthHeader } from './git-auth';
+import { assertSafeRepoUrl, assertSafeGitRef, repoFilePath } from './git-url-safety';
 import {
 	parseManifest,
 	serializeManifest,
@@ -243,14 +246,12 @@ async function buildGitEnv(credential: GitCredential | null): Promise<GitEnv> {
 	// instead of embedding them in the URL (which leaks via /proc/<pid>/cmdline, #1081).
 	// Uses GIT_CONFIG_COUNT mechanism (git >= 2.31) to set Authorization header.
 	if (credential?.authType === 'password' && (credential.username || credential.password)) {
-		const token = credential.password || '';
-		const username = credential.username || '';
-		// Use Basic auth (base64 of username:password) — works with GitHub PATs,
-		// GitLab tokens, Gitea tokens, and standard username/password combos.
-		const basicAuth = Buffer.from(`${username}:${token}`).toString('base64');
+		// Basic auth (base64 of username:password) — works with GitHub PATs, GitLab
+		// tokens, Gitea tokens, and standard username/password combos. Empty username
+		// is defaulted inside buildBasicAuthHeader (see #1273).
 		env.GIT_CONFIG_COUNT = '1';
 		env.GIT_CONFIG_KEY_0 = 'http.extraHeader';
-		env.GIT_CONFIG_VALUE_0 = `Authorization: Basic ${basicAuth}`;
+		env.GIT_CONFIG_VALUE_0 = buildBasicAuthHeader(credential.username || '', credential.password || '');
 	}
 
 	if (credential?.authType === 'ssh' && credential.sshPrivateKey) {
@@ -307,6 +308,7 @@ function cleanupSshKey(credential: GitCredential | null): void {
 }
 
 function buildRepoUrl(url: string, credential: GitCredential | null): string {
+	assertSafeRepoUrl(url);
 	// Never embed credentials in the URL — they leak via /proc/<pid>/cmdline (see #1081).
 	// HTTPS credentials are injected via GIT_CONFIG_COUNT env vars in buildGitEnv().
 	// Strip any existing credentials from the URL for safety.
@@ -542,6 +544,7 @@ async function testRepositoryConnection(options: {
 	const { url, branch, credential } = options;
 
 	const env = await buildGitEnv(credential);
+	assertSafeGitRef(branch);
 	const repoUrl = buildRepoUrl(url, credential);
 
 	try {
@@ -675,6 +678,7 @@ export async function syncRepository(repoId: number): Promise<SyncResult> {
 
 		if (!existsSync(repoPath)) {
 			// Clone the repository (blobless clone - fetches all commits but blobs on-demand)
+			assertSafeGitRef(repo.branch);
 			const repoUrl = buildRepoUrl(repo.url, credential);
 
 			const result = await execGit(
@@ -714,7 +718,7 @@ export async function syncRepository(repoId: number): Promise<SyncResult> {
 		currentCommit = commitResult.stdout.substring(0, 7);
 
 		// Read the compose file
-		const composePath = join(repoPath, repo.composePath);
+		const composePath = repoFilePath(repoPath, repo.composePath, "Compose path");
 		if (!existsSync(composePath)) {
 			throw new Error(`Compose file not found: ${repo.composePath}`);
 		}
@@ -924,6 +928,7 @@ export async function syncGitStack(stackId: number): Promise<SyncResult> {
 		}
 
 		console.log(`${logPrefix} Cloning repository...`);
+		assertSafeGitRef(repo.branch);
 		const repoUrl = buildRepoUrl(repo.url, credential);
 
 		const result = await execGit(
@@ -993,7 +998,7 @@ export async function syncGitStack(stackId: number): Promise<SyncResult> {
 		console.log(`${logPrefix} Current commit:`, currentCommit);
 
 		// Read the compose file
-		const composePath = join(repoPath, gitStack.composePath);
+		const composePath = repoFilePath(repoPath, gitStack.composePath, "Compose path");
 		console.log(`${logPrefix} Reading compose file from:`, composePath);
 		if (!existsSync(composePath)) {
 			console.log(`${logPrefix} ERROR: Compose file not found at:`, composePath);
@@ -1035,7 +1040,7 @@ export async function syncGitStack(stackId: number): Promise<SyncResult> {
 		let envFileContent: string | undefined;
 		let envFileName: string | undefined;
 		if (gitStack.envFilePath) {
-			const envFilePath = join(repoPath, gitStack.envFilePath);
+			const envFilePath = repoFilePath(repoPath, gitStack.envFilePath, "Env file path");
 			console.log(`${logPrefix} Looking for env file at:`, envFilePath);
 			if (existsSync(envFilePath)) {
 				try {
@@ -1112,6 +1117,37 @@ export async function syncGitStack(stackId: number): Promise<SyncResult> {
 	}
 }
 
+/**
+ * Fire the git_sync_success / git_sync_failed / git_sync_skipped notification for a
+ * git-stack deploy. Called from deployGitStack so EVERY caller notifies — webhook,
+ * manual API deploy, create/update, and the scheduler alike. Previously the dispatch
+ * lived only in the git-stack-sync scheduler task, so webhook/manual deploys were
+ * silent (#1295). Best-effort: never changes the deploy outcome.
+ */
+async function notifyGitSync(stackName: string, envId: number | null | undefined, result: { success: boolean; error?: string; skipped?: boolean }): Promise<void> {
+	try {
+		if (result.success && result.skipped) {
+			await sendEventNotification('git_sync_skipped', {
+				title: 'Git sync skipped',
+				message: `Stack "${stackName}" sync skipped: no changes detected`,
+				type: 'info'
+			}, envId ?? undefined);
+		} else if (result.success) {
+			await sendEventNotification('git_sync_success', {
+				title: 'Git stack deployed',
+				message: `Stack "${stackName}" was synced and deployed successfully`,
+				type: 'success'
+			}, envId ?? undefined);
+		} else {
+			await sendEventNotification('git_sync_failed', {
+				title: 'Git sync failed',
+				message: `Stack "${stackName}" sync failed: ${result.error || 'unknown error'}`,
+				type: 'error'
+			}, envId ?? undefined);
+		}
+	} catch { /* never changes the deploy outcome */ }
+}
+
 export async function deployGitStack(stackId: number, options?: { force?: boolean }): Promise<{ success: boolean; output?: string; error?: string; skipped?: boolean }> {
 	const force = options?.force ?? true; // Default to force for backward compatibility
 
@@ -1132,7 +1168,9 @@ export async function deployGitStack(stackId: number, options?: { force?: boolea
 	const syncResult = await syncGitStack(stackId);
 	if (!syncResult.success) {
 		console.log(`${logPrefix} Sync failed:`, syncResult.error);
-		return { success: false, error: syncResult.error };
+		const failResult = { success: false, error: syncResult.error };
+		await notifyGitSync(gitStack.stackName, gitStack.environmentId, failResult);
+		return failResult;
 	}
 
 	console.log(`${logPrefix} Sync successful`);
@@ -1150,11 +1188,13 @@ export async function deployGitStack(stackId: number, options?: { force?: boolea
 	const shouldDeploy = force || gitStack.forceRedeploy || syncResult.updated;
 	if (!shouldDeploy) {
 		console.log(`${logPrefix} No changes detected and force=false, forceRedeploy=false, skipping redeploy`);
-		return {
+		const skippedResult = {
 			success: true,
 			output: 'No changes detected, skipping redeploy',
 			skipped: true
 		};
+		await notifyGitSync(gitStack.stackName, gitStack.environmentId, skippedResult);
+		return skippedResult;
 	}
 
 	const forceRecreate = syncResult.updated;
@@ -1183,7 +1223,8 @@ export async function deployGitStack(stackId: number, options?: { force?: boolea
 		build: gitStack.buildOnDeploy,
 		noBuildCache: gitStack.noBuildCache,
 		pullPolicy: gitStack.repullImages ? 'always' : undefined,
-		filesToDelete: syncResult.deletionPlan?.toDelete
+		filesToDelete: syncResult.deletionPlan?.toDelete,
+		isGitDeploy: true // suppress stack_* notification; we emit git_sync_* below
 	});
 
 	console.log(`${logPrefix} ----------------------------------------`);
@@ -1225,6 +1266,9 @@ export async function deployGitStack(stackId: number, options?: { force?: boolea
 		});
 	}
 
+	// git_sync_success / git_sync_failed for the actual deploy result. deployStack
+	// suppressed its stack_* notification (isGitDeploy), so this is the single one.
+	await notifyGitSync(gitStack.stackName, gitStack.environmentId, result);
 	return result;
 }
 
@@ -1241,6 +1285,7 @@ export async function testGitStack(stackId: number): Promise<TestResult> {
 
 	const credential = repo.credentialId ? await getGitCredential(repo.credentialId) : null;
 	const env = await buildGitEnv(credential);
+	assertSafeGitRef(repo.branch);
 	const repoUrl = buildRepoUrl(repo.url, credential);
 
 	try {
@@ -1349,6 +1394,7 @@ export async function deployGitStackWithProgress(
 			rmSync(repoPath, { recursive: true, force: true });
 		}
 
+		assertSafeGitRef(repo.branch);
 		const repoUrl = buildRepoUrl(repo.url, credential);
 
 		// Step 3: Fetching (blobless clone - fetches all commits but blobs on-demand)
@@ -1394,7 +1440,7 @@ export async function deployGitStackWithProgress(
 
 		// Step 4: Reading compose file
 		onProgress({ status: 'reading', message: `Reading ${gitStack.composePath}...`, step: 4, totalSteps });
-		const composePath = join(repoPath, gitStack.composePath);
+		const composePath = repoFilePath(repoPath, gitStack.composePath, "Compose path");
 		if (!existsSync(composePath)) {
 			throw new Error(`Compose file not found: ${gitStack.composePath}`);
 		}
@@ -1423,7 +1469,7 @@ export async function deployGitStackWithProgress(
 		// Read env file if configured (optional - don't fail if missing)
 		let envFileVars: Record<string, string> | undefined;
 		if (gitStack.envFilePath) {
-			const envFilePath = join(repoPath, gitStack.envFilePath);
+			const envFilePath = repoFilePath(repoPath, gitStack.envFilePath, "Env file path");
 			if (existsSync(envFilePath)) {
 				try {
 					const envContent = readFileSync(envFilePath, 'utf-8');
@@ -1488,7 +1534,7 @@ export async function deployGitStackWithProgress(
 		// Determine env filename relative to compose dir (same logic as syncGitStack)
 		let envFileName: string | undefined;
 		if (gitStack.envFilePath) {
-			const envFilePath = join(repoPath, gitStack.envFilePath);
+			const envFilePath = repoFilePath(repoPath, gitStack.envFilePath, "Env file path");
 			if (existsSync(envFilePath)) {
 				envFileName = relative(composeDir, envFilePath);
 			}
@@ -1750,6 +1796,7 @@ export async function previewRepoEnvFiles(options: PreviewEnvOptions): Promise<P
 		// Build git environment with credentials
 		// Cast credential to GitCredential type (only uses id, authType, sshPrivateKey)
 		const env = await buildGitEnv(credential as GitCredential | null);
+		assertSafeGitRef(branch);
 		const authenticatedUrl = buildRepoUrl(repoUrl, credential as GitCredential | null);
 
 		// Clone with depth 1 (shallow clone for speed)
