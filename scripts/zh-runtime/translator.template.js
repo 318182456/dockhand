@@ -1,6 +1,7 @@
 /**
  * Dockhand 运行时中文化脚本(浏览器端)
- * 由 inject.js 在镜像构建期将 __DICT_JSON__ 替换为完整字典后写入 build/client/zh-translate.js。
+ * 由 inject.mjs 在镜像构建期填入字典后写入 build/client/zh-translate.js。
+ * 注意:下方 DICT 的占位符是本文件唯一的占位符字面量,不要在别处(含注释)重复书写。
  * 原理:MutationObserver 监听 DOM,对文本节点/常见属性做字典翻译。
  * 不修改上游任何源码,对上游版本升级完全免疫。
  */

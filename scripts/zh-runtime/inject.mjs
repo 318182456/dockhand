@@ -28,8 +28,19 @@ const MARK = 'zh-translate.js';
 const dictRaw = fs.readFileSync(path.join(assetDir, 'dict.json'), 'utf8').trim();
 JSON.parse(dictRaw); // 仅校验合法性
 const template = fs.readFileSync(path.join(assetDir, 'translator.template.js'), 'utf8');
-// 用函数替换,避免字典内容中的 $ 序列被 String.replace 特殊解释
-const clientJs = template.replace('__DICT_JSON__', () => dictRaw);
+const PLACEHOLDER = '__DICT_' + 'JSON__'; // 拼接书写,避免本文件自身成为误替换目标
+const occurrences = template.split(PLACEHOLDER).length - 1;
+if (occurrences !== 1) {
+	// 曾经踩过:模板注释里也写了占位符,replace 命中注释导致 DICT 未定义、翻译器静默失效
+	console.error('错误: 模板中占位符出现 ' + occurrences + ' 次,必须且只能出现 1 次');
+	process.exit(1);
+}
+// split/join 而非 replace:避免字典内容中的 $ 序列被当作替换模式解释
+const clientJs = template.split(PLACEHOLDER).join(dictRaw);
+if (clientJs.includes(PLACEHOLDER) || !clientJs.includes('var DICT = {')) {
+	console.error('错误: 字典未能正确注入 DICT 变量');
+	process.exit(1);
+}
 
 const clientDir = path.join(buildDir, 'client');
 if (!fs.existsSync(clientDir)) {
