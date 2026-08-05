@@ -83,8 +83,10 @@ RUN MAKEFLAGS="-j$(nproc)" npm ci \
 
 # Copy source code and build
 COPY . .
+# NODE_OPTIONS: v1.0.40 起前端体量增大，vite build 超出 Node 默认 ~4GB 堆上限（exit 134 / SIGABRT），显式放宽到 8GB
 RUN rm -rf .svelte-kit \
-    && npx svelte-kit sync && npm run build
+    && npx svelte-kit sync \
+    && NODE_OPTIONS="--max-old-space-size=8192" npm run build
 
 # Production dependencies only
 # Preserve better-sqlite3 native addon (no prebuilds exist for Node 24 ABI 137)
