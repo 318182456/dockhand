@@ -11,9 +11,13 @@
 	var DICT = __DICT_JSON__;
 
 	// 子串回退表:仅收录较长词条(>=10 字符),按长度降序,避免短词误伤
+	// 排除"译文仍含原文"的自引用词条(如 PIDs Limit => 进程数限制 (PIDs Limit)):
+	// 这类词条一旦参与子串替换,翻译结果写回 DOM 会再次触发 characterData mutation,
+	// 每轮在译文内部再嵌一层,文本无限膨胀。
 	var SUB_KEYS = [];
 	for (var k in DICT) {
-		if (Object.prototype.hasOwnProperty.call(DICT, k) && k.length >= 10 && DICT[k] && DICT[k] !== k) {
+		if (Object.prototype.hasOwnProperty.call(DICT, k) && k.length >= 10 && DICT[k] && DICT[k] !== k &&
+			DICT[k].indexOf(k) === -1) {
 			SUB_KEYS.push(k);
 		}
 	}
@@ -51,6 +55,9 @@
 			}
 		}
 		memo[s] = out;
+		// 幂等保护:译文自身也登记为"已是最终形态",
+		// 即使它恰好又命中某条规则,重入时也直接原样返回,不会二次膨胀。
+		if (out !== s && memo[out] === undefined) memo[out] = out;
 		return out;
 	}
 
