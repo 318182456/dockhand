@@ -11,6 +11,9 @@
  * 镜像站的 tag 刻意保留:删掉它会连带删除 RepoDigests,上游的更新检测依赖该 digest。
  * 已配置凭据(带 X-Registry-Auth)的私有镜像不走镜像站。
  *
+ * Stack 部署由 docker compose 自行拉取,不经过 dockerFetch。
+ * inject.mjs 同时把本文件追加到 compose 执行 chunk,在 spawn 前调用 __zhComposePrepull 预拉取。
+ *
  * 环境变量 ZH_REGISTRY_MIRRORS:
  *   未设置  → 使用下方默认映射
  *   off/空  → 关闭
@@ -198,4 +201,125 @@ async function __zhMirrorFetch(orig, path, opts, envId) {
 		}
 	});
 	return new Response(body, { status: 200, statusText: 'OK', headers: { 'Content-Type': 'application/json' } });
+}
+
+// 拆出仓库名与 tag;digest 引用返回 null(无法 tag 回原名)
+function __zhMirrorSplitTag(image) {
+	if (!image || image.indexOf('@') !== -1) return null;
+	var colon = image.lastIndexOf(':');
+	if (colon > image.lastIndexOf('/')) return { from: image.slice(0, colon), tag: image.slice(colon + 1) };
+	return { from: image, tag: 'latest' };
+}
+
+/**
+ * Stack 部署前预拉取:用与 compose 相同的参数/环境,先经镜像站拉好镜像并 tag 回原名,
+ * compose 随后发现本地已有镜像便不再拉取。
+ * 拉取语义对齐 compose:up 默认只拉本地缺失的;--pull always 或 pull 操作全部拉;--pull never 跳过。
+ * 这里只做加速,任何失败都静默交还给 compose 按原地址处理,绝不抛出。
+ *   op/pullPolicy/serviceName — 对应 buildComposeOperationArgs 的入参
+ *   args/baseLen — 完整 compose 命令行与其中操作参数之前的长度(即 "docker compose -p .. -f .." 部分)
+ *   stdinContent — compose 内容经 stdin 传入(-f -)时的内容,否则为 null
+ */
+async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cwd, env, stdinContent, logPrefix) {
+	var tag0 = (logPrefix || '[Stack]') + ' [ZhMirror]';
+	try {
+		if (op !== 'up' && op !== 'pull') return;
+		if (op === 'up' && pullPolicy === 'never') return;
+		if (!Array.isArray(args) || typeof baseLen !== 'number' || baseLen < 2) return;
+		var table = __zhMirrorTable();
+		if (!Object.keys(table).length) return;
+		var pullAll = op === 'pull' || pullPolicy === 'always';
+		var cp = await import('node:child_process');
+
+		var run = function (argv, input, timeoutMs, onLine) {
+			return new Promise(function (resolve) {
+				var out = '';
+				var pending = '';
+				var done = false;
+				var finish = function (code) { if (!done) { done = true; clearTimeout(timer); resolve({ code: code, out: out }); } };
+				var proc;
+				try {
+					proc = cp.spawn(args[0], argv, { cwd: cwd, env: env, stdio: [input != null ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+				} catch (e) {
+					out = (e && e.message) || String(e);
+					resolve({ code: -1, out: out });
+					return;
+				}
+				var timer = setTimeout(function () {
+					out += '\n超时(' + Math.round(timeoutMs / 1000) + 's)';
+					try { proc.kill('SIGKILL'); } catch (e) { /* 已退出 */ }
+					finish(-1);
+				}, timeoutMs);
+				var onData = function (d) {
+					var s = d.toString();
+					out += s;
+					if (out.length > 65536) out = out.slice(-32768);
+					if (!onLine) return;
+					pending += s;
+					var lines = pending.split(/\r?\n/);
+					pending = lines.pop();
+					for (var i = 0; i < lines.length; i++) if (lines[i].trim()) onLine(lines[i]);
+				};
+				proc.stdout.on('data', onData);
+				proc.stderr.on('data', onData);
+				proc.on('error', function (e) { out += (e && e.message) || String(e); finish(-1); });
+				proc.on('close', function (code) { finish(code); });
+				if (input != null) {
+					proc.stdin.on('error', function () { /* 进程提前退出 */ });
+					proc.stdin.end(input);
+				}
+			});
+		};
+
+		var base = args.slice(1, baseLen); // 去掉开头的 docker
+		var cfg = await run(base.concat(['config', '--images'], serviceName ? [serviceName] : []), stdinContent, 60000);
+		if (cfg.code !== 0) {
+			console.warn(tag0 + ' 解析镜像列表失败,跳过预拉取: ' + cfg.out.trim().slice(0, 500));
+			return;
+		}
+		var seen = Object.create(null);
+		var images = cfg.out.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(function (s) {
+			if (!s || seen[s]) return false;
+			seen[s] = true;
+			return true;
+		});
+
+		for (var i = 0; i < images.length; i++) {
+			var ref = __zhMirrorSplitTag(images[i]);
+			if (!ref) continue;
+			var parsed = __zhMirrorParseRef(ref.from);
+			var mirror = table[parsed.registry];
+			if (!mirror) continue;
+			var origRef = ref.from + ':' + ref.tag;
+			var mirrorRef = mirror + '/' + parsed.path + ':' + ref.tag;
+
+			if (!pullAll) {
+				var ins = await run(['image', 'inspect', '--format', '{{.Id}}', origRef], null, 30000);
+				if (ins.code === 0) continue; // 本地已有,compose 也不会拉
+			}
+
+			console.log(tag0 + ' 预拉取 ' + origRef + ' ← ' + mirrorRef);
+			var last = 0;
+			var pr = await run(['pull', mirrorRef], null, 30 * 60 * 1000, function (line) {
+				// docker pull 非 TTY 下逐层输出状态,限流避免刷屏
+				var now = Date.now();
+				if (now - last > 3000 || /^(Status|Digest|Error|error)/.test(line)) {
+					last = now;
+					console.log(tag0 + '   ' + line);
+				}
+			});
+			if (pr.code !== 0) {
+				console.warn(tag0 + ' 镜像站拉取失败,交给 compose 从原地址拉取: ' + pr.out.trim().split('\n').pop());
+				continue;
+			}
+			var tr = await run(['tag', mirrorRef, origRef], null, 30000);
+			if (tr.code !== 0) {
+				console.warn(tag0 + ' tag 回原名失败,交给 compose 从原地址拉取: ' + tr.out.trim());
+				continue;
+			}
+			console.log(tag0 + ' ' + origRef + ' 已通过 ' + mirror + ' 拉取');
+		}
+	} catch (e) {
+		console.warn(tag0 + ' 预拉取异常,跳过: ' + ((e && e.message) || String(e)));
+	}
 }

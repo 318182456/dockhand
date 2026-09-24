@@ -35,7 +35,7 @@ volumes:
 
 ## 镜像加速(默认开启)
 
-在 Dockhand 里拉取镜像(镜像页拉取、创建/更新容器、自动更新)时,会自动改从国内镜像站拉取,完成后 tag 回原名,容器引用与界面显示均不变:
+在 Dockhand 里拉取镜像(镜像页拉取、创建/更新容器、自动更新、Stack 部署)时,会自动改从国内镜像站拉取,完成后 tag 回原名,容器引用与界面显示均不变:
 
 | 原 registry | 镜像站 |
 |---|---|
@@ -49,7 +49,8 @@ volumes:
 - 镜像站失败时自动回退到原地址,最差等同未开启
 - 已在 Dockhand 中配置凭据的 registry(私有镜像)不走镜像站
 - 拉取后本地会多出一个镜像站名称的 tag(如 `ghcr.nju.edu.cn/xxx`),指向同一镜像、不占额外空间;请勿删除,更新检测依赖它记录的 digest
-- 暂不覆盖 Stack(compose)部署时由 `docker compose` 自行发起的拉取
+- Stack 部署:执行 `docker compose up/pull` 前按相同参数解析镜像列表并预拉取,拉取语义与 compose 一致(`up` 只拉本地缺失的,`--pull always` 全部拉,`--pull never` 跳过);预拉取失败则由 compose 照常从原地址拉取。日志前缀 `[ZhMirror]`
+- 仅本机/直连环境生效;Hawser 远程 agent 环境的拉取在 agent 端进行,不受影响
 
 通过环境变量 `ZH_REGISTRY_MIRRORS` 调整:
 
