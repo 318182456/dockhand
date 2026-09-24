@@ -22,14 +22,16 @@
  *   其他    → 完全替换默认映射,格式 "ghcr.io=ghcr.linkos.org|ghcr.nju.edu.cn,docker.io=docker.1ms.run"
  *             同一 registry 可用 | 分隔多个镜像站,按顺序探测
  */
-// 顺序按 2026-09 实测下载速度排列。daocloud 快但有白名单,白名单外直接 403,探测会立即跳过;
-// NJU 普遍限速约 0.4MB/s 且冷门镜像需长时间回源,只作兜底。
+// 国内镜像站在前(按 2026-09 直连实测速度),境外镜像站只在最后兜底。
+//   daocloud(上海阿里云)快但有白名单,白名单外直接 403,探测会立即跳过
+//   1ms(国内)速度稳定;NJU(教育网)普遍限速约 0.4MB/s 且冷门镜像需长时间回源
+//   xuanyuan(Cloudflare)、linkos(加拿大 Cogent)、dockerproxy(美国)为境外节点,无代理时通常很慢
 var __zhMirrorDefaults = [
-	'docker.io=docker.m.daocloud.io|docker.xuanyuan.me|docker.1ms.run|docker.linkos.org',
-	'ghcr.io=ghcr.m.daocloud.io|ghcr.1ms.run|ghcr.linkos.org|ghcr.nju.edu.cn',
+	'docker.io=docker.m.daocloud.io|docker.1ms.run|docker.xuanyuan.me|docker.linkos.org',
+	'ghcr.io=ghcr.m.daocloud.io|ghcr.1ms.run|ghcr.nju.edu.cn|ghcr.linkos.org',
 	'gcr.io=gcr.m.daocloud.io|gcr.nju.edu.cn|gcr.linkos.org',
-	'quay.io=quay.m.daocloud.io|quay.dockerproxy.net|quay.linkos.org|quay.nju.edu.cn',
-	'registry.k8s.io=k8s.m.daocloud.io|k8s.linkos.org|k8s.nju.edu.cn',
+	'quay.io=quay.m.daocloud.io|quay.nju.edu.cn|quay.linkos.org|quay.dockerproxy.net',
+	'registry.k8s.io=k8s.m.daocloud.io|k8s.nju.edu.cn|k8s.linkos.org',
 	'nvcr.io=nvcr.m.daocloud.io|nvcr.1ms.run|nvcr.nju.edu.cn'
 ].join(',');
 var __zhMirrorTableCache = null;

@@ -39,12 +39,14 @@ volumes:
 
 | 原 registry | 镜像站(按顺序尝试) |
 |---|---|
-| `docker.io` | `docker.m.daocloud.io` → `docker.xuanyuan.me` → `docker.1ms.run` → `docker.linkos.org` |
-| `ghcr.io` | `ghcr.m.daocloud.io` → `ghcr.1ms.run` → `ghcr.linkos.org` → `ghcr.nju.edu.cn` |
-| `gcr.io` | `gcr.m.daocloud.io` → `gcr.nju.edu.cn` → `gcr.linkos.org` |
-| `quay.io` | `quay.m.daocloud.io` → `quay.dockerproxy.net` → `quay.linkos.org` → `quay.nju.edu.cn` |
-| `registry.k8s.io` | `k8s.m.daocloud.io` → `k8s.linkos.org` → `k8s.nju.edu.cn` |
+| `docker.io` | `docker.m.daocloud.io` → `docker.1ms.run` → `docker.xuanyuan.me`* → `docker.linkos.org`* |
+| `ghcr.io` | `ghcr.m.daocloud.io` → `ghcr.1ms.run` → `ghcr.nju.edu.cn` → `ghcr.linkos.org`* |
+| `gcr.io` | `gcr.m.daocloud.io` → `gcr.nju.edu.cn` → `gcr.linkos.org`* |
+| `quay.io` | `quay.m.daocloud.io` → `quay.nju.edu.cn` → `quay.linkos.org`* → `quay.dockerproxy.net`* |
+| `registry.k8s.io` | `k8s.m.daocloud.io` → `k8s.nju.edu.cn` → `k8s.linkos.org`* |
 | `nvcr.io` | `nvcr.m.daocloud.io` → `nvcr.1ms.run` → `nvcr.nju.edu.cn` |
+
+标 `*` 的为境外节点,无代理时通常较慢,仅作兜底。
 
 - 拉取前逐个探测镜像站:取 manifest 并读取最大层的前 1MB,12 秒内读完才采用,否则跳过换下一个。可以识别白名单拒绝(如 daocloud 对个人镜像返回 403)、冷门镜像长时间回源(如 NJU)和限速过低的站点
 - 全部镜像站不可用或拉取失败时回退到原地址,最差等同未开启
