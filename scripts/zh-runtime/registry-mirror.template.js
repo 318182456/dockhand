@@ -5,6 +5,8 @@
  * 并把原 dockerFetch 改名为 <名称>__zhOrig,由 __zhMirrorFetch 包一层。
  *
  * 流程:POST /images/create 且 registry 命中映射表 →
+ *   0) 按顺序探测该 registry 的各镜像站(取 manifest + 最大层前 64KB),选第一个在限时内出数据的;
+ *      回源缓存型镜像站(如 NJU)对冷门镜像会一直不吐数据,探测可在十几秒内识别并跳过
  *   1) 从镜像站拉取,进度原样转发给调用方
  *   2) 成功后 tag 回原名(容器/compose 引用、界面显示均不变)
  *   3) 镜像站任一环节失败 → 丢弃其错误行,透明回退到原地址重拉
@@ -17,14 +19,19 @@
  * 环境变量 ZH_REGISTRY_MIRRORS:
  *   未设置  → 使用下方默认映射
  *   off/空  → 关闭
- *   其他    → 完全替换默认映射,格式 "ghcr.io=ghcr.nju.edu.cn,docker.io=docker.1ms.run"
+ *   其他    → 完全替换默认映射,格式 "ghcr.io=ghcr.linkos.org|ghcr.nju.edu.cn,docker.io=docker.1ms.run"
+ *             同一 registry 可用 | 分隔多个镜像站,按顺序探测
  */
-var __zhMirrorDefaults = 'docker.io=docker.1ms.run,' +
-	'ghcr.io=ghcr.nju.edu.cn,' +
-	'gcr.io=gcr.nju.edu.cn,' +
-	'quay.io=quay.nju.edu.cn,' +
-	'registry.k8s.io=k8s.nju.edu.cn,' +
-	'nvcr.io=nvcr.nju.edu.cn';
+// 顺序按 2026-09 实测下载速度排列。daocloud 快但有白名单,白名单外直接 403,探测会立即跳过;
+// NJU 普遍限速约 0.4MB/s 且冷门镜像需长时间回源,只作兜底。
+var __zhMirrorDefaults = [
+	'docker.io=docker.m.daocloud.io|docker.xuanyuan.me|docker.1ms.run|docker.linkos.org',
+	'ghcr.io=ghcr.m.daocloud.io|ghcr.1ms.run|ghcr.linkos.org|ghcr.nju.edu.cn',
+	'gcr.io=gcr.m.daocloud.io|gcr.nju.edu.cn|gcr.linkos.org',
+	'quay.io=quay.m.daocloud.io|quay.dockerproxy.net|quay.linkos.org|quay.nju.edu.cn',
+	'registry.k8s.io=k8s.m.daocloud.io|k8s.linkos.org|k8s.nju.edu.cn',
+	'nvcr.io=nvcr.m.daocloud.io|nvcr.1ms.run|nvcr.nju.edu.cn'
+].join(',');
 var __zhMirrorTableCache = null;
 
 function __zhMirrorTable() {
@@ -39,13 +46,15 @@ function __zhMirrorTable() {
 			var eq = items[i].indexOf('=');
 			if (eq <= 0) continue;
 			var from = items[i].slice(0, eq).trim().toLowerCase();
-			var to = items[i].slice(eq + 1).trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
-			if (from && to) table[from] = to;
+			var to = items[i].slice(eq + 1).split('|').map(function (h) {
+				return h.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+			}).filter(Boolean);
+			if (from && to.length) table[from] = to;
 		}
 	}
 	var keys = Object.keys(table);
 	console.log('[ZhMirror] ' + (keys.length
-		? '镜像加速已启用: ' + keys.map(function (k) { return k + ' → ' + table[k]; }).join(', ')
+		? '镜像加速已启用: ' + keys.map(function (k) { return k + ' → ' + table[k].join('|'); }).join(', ')
 		: '镜像加速已关闭'));
 	__zhMirrorTableCache = table;
 	return table;
@@ -77,6 +86,111 @@ function __zhMirrorHasAuth(headers) {
 	return false;
 }
 
+var __zhMirrorAccept = [
+	'application/vnd.oci.image.index.v1+json',
+	'application/vnd.docker.distribution.manifest.list.v2+json',
+	'application/vnd.oci.image.manifest.v1+json',
+	'application/vnd.docker.distribution.manifest.v2+json'
+].join(',');
+// 探测门槛:最大层前 1MB 须在 12s 内读完(≈85KB/s),慢于此的镜像站跳过
+var __zhMirrorProbeBytes = 1048576;
+var __zhMirrorProbeMs = 12000;
+var __zhMirrorArch ={ x64: 'amd64', arm64: 'arm64', arm: 'arm', ppc64: 'ppc64le', s390x: 's390x' }[process.arch] || process.arch;
+
+/**
+ * 探测镜像站能否真正提供该镜像:取 manifest(多架构时选本机架构),再取最大层的前 64KB。
+ * 由 Dockhand 进程直接请求,与 daemon 所在网络通常一致。返回 { ok, ms, reason }。
+ */
+async function __zhMirrorProbe(mirror, repoPath, tag) {
+	var t0 = Date.now();
+	var base = 'https://' + mirror + '/v2/' + repoPath;
+	var auth = null;
+	var get = async function (url, accept, ms, firstBytes) {
+		var ac = new AbortController();
+		var timer = setTimeout(function () { ac.abort(); }, ms);
+		try {
+			var build = function () {
+				var h = {};
+				if (accept) h.Accept = accept;
+				if (auth) h.Authorization = auth;
+				if (firstBytes) h.Range = 'bytes=0-' + (__zhMirrorProbeBytes - 1);
+				return h;
+			};
+			var res = await fetch(url, { headers: build(), signal: ac.signal });
+			if (res.status === 401 && !auth) {
+				// 标准 registry token 流程
+				var wa = res.headers.get('www-authenticate') || '';
+				if (res.body) await res.body.cancel().catch(function () {});
+				var realm = /realm="([^"]+)"/i.exec(wa);
+				if (!realm) throw new Error('HTTP 401');
+				var svc = /service="([^"]+)"/i.exec(wa);
+				var turl = realm[1] + (realm[1].indexOf('?') === -1 ? '?' : '&') +
+					'scope=' + encodeURIComponent('repository:' + repoPath + ':pull') +
+					(svc ? '&service=' + encodeURIComponent(svc[1]) : '');
+				var tr = await fetch(turl, { signal: ac.signal });
+				var tj = tr.ok ? await tr.json() : {};
+				var tok = tj.token || tj.access_token;
+				if (!tok) throw new Error('获取 token 失败 HTTP ' + tr.status);
+				auth = 'Bearer ' + tok;
+				res = await fetch(url, { headers: build(), signal: ac.signal });
+			}
+			if (!res.ok) {
+				if (res.body) await res.body.cancel().catch(function () {});
+				throw new Error('HTTP ' + res.status);
+			}
+			if (!firstBytes) return await res.json();
+			// 读满 __zhMirrorProbeBytes(或整层)才算通过:只看首包会放过"能连通但极慢"的镜像站
+			var reader = res.body.getReader();
+			var got = 0;
+			for (;;) {
+				var r = await reader.read();
+				if (r.done) break;
+				got += r.value.length;
+				if (got >= __zhMirrorProbeBytes) break;
+			}
+			reader.cancel().catch(function () {});
+			if (!got) throw new Error('层数据为空');
+			return got;
+		} catch (e) {
+			if (ac.signal.aborted) throw new Error(Math.round(ms / 1000) + 's 内无响应');
+			throw e;
+		} finally {
+			clearTimeout(timer);
+		}
+	};
+	try {
+		var m = await get(base + '/manifests/' + encodeURIComponent(tag), __zhMirrorAccept, 10000);
+		if (m && Array.isArray(m.manifests)) {
+			var list = m.manifests.filter(function (x) { return x.platform && x.platform.os !== 'unknown'; });
+			var pick = list.filter(function (x) { return x.platform.os === 'linux' && x.platform.architecture === __zhMirrorArch; })[0] || list[0];
+			if (!pick) throw new Error('manifest 列表中无可用平台');
+			m = await get(base + '/manifests/' + pick.digest, __zhMirrorAccept, 10000);
+		}
+		var layers = (m && m.layers) || [];
+		if (layers.length) {
+			var big = layers.reduce(function (a, b) { return (b.size || 0) > (a.size || 0) ? b : a; });
+			await get(base + '/blobs/' + big.digest, null, __zhMirrorProbeMs, true);
+		}
+		return { ok: true, ms: Date.now() - t0 };
+	} catch (e) {
+		return { ok: false, ms: Date.now() - t0, reason: (e && e.message) || String(e) };
+	}
+}
+
+// 按顺序探测,返回第一个可用的镜像站;skip 为已试过的镜像站
+async function __zhMirrorPick(mirrors, repoPath, tag, label, logPrefix, skip) {
+	for (var i = 0; i < mirrors.length; i++) {
+		if (skip && skip.indexOf(mirrors[i]) !== -1) continue;
+		var p = await __zhMirrorProbe(mirrors[i], repoPath, tag);
+		if (p.ok) {
+			console.log(logPrefix + ' 探测 ' + mirrors[i] + ' 可用(' + p.ms + 'ms): ' + label);
+			return mirrors[i];
+		}
+		console.warn(logPrefix + ' 探测 ' + mirrors[i] + ' 不可用,跳过: ' + p.reason);
+	}
+	return null;
+}
+
 async function __zhMirrorFetch(orig, path, opts, envId) {
 	opts = opts || {};
 	var method = (opts.method || 'GET').toUpperCase();
@@ -102,14 +216,19 @@ async function __zhMirrorFetch(orig, path, opts, envId) {
 	if (__zhMirrorHasAuth(opts.headers)) return orig(path, opts, envId);
 
 	var ref = __zhMirrorParseRef(from);
-	var mirror = __zhMirrorTable()[ref.registry];
-	if (!mirror) return orig(path, opts, envId);
+	var mirrors = __zhMirrorTable()[ref.registry];
+	if (!mirrors) return orig(path, opts, envId);
+	var label = from + ':' + tag;
+	var mirror = await __zhMirrorPick(mirrors, ref.path, tag, label, '[ZhMirror]');
+	if (!mirror) {
+		console.warn('[ZhMirror] 无可用镜像站,直接从原地址拉取: ' + label);
+		return orig(path, opts, envId);
+	}
 
 	var mirrored = mirror + '/' + ref.path;
 	var mq = new URLSearchParams(qs);
 	mq.set('fromImage', mirrored);
 	mq.set('tag', tag);
-	var label = from + ':' + tag;
 
 	var res = null;
 	var firstError = null;
@@ -288,36 +407,46 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 			var ref = __zhMirrorSplitTag(images[i]);
 			if (!ref) continue;
 			var parsed = __zhMirrorParseRef(ref.from);
-			var mirror = table[parsed.registry];
-			if (!mirror) continue;
+			var mirrors = table[parsed.registry];
+			if (!mirrors) continue;
 			var origRef = ref.from + ':' + ref.tag;
-			var mirrorRef = mirror + '/' + parsed.path + ':' + ref.tag;
 
 			if (!pullAll) {
 				var ins = await run(['image', 'inspect', '--format', '{{.Id}}', origRef], null, 30000);
 				if (ins.code === 0) continue; // 本地已有,compose 也不会拉
 			}
 
-			console.log(tag0 + ' 预拉取 ' + origRef + ' ← ' + mirrorRef);
-			var last = 0;
-			var pr = await run(['pull', mirrorRef], null, 30 * 60 * 1000, function (line) {
-				// docker pull 非 TTY 下逐层输出状态,限流避免刷屏
-				var now = Date.now();
-				if (now - last > 3000 || /^(Status|Digest|Error|error)/.test(line)) {
-					last = now;
-					console.log(tag0 + '   ' + line);
+			// 逐个镜像站:探测通过才拉,拉取失败换下一个;全部失败交还 compose
+			var tried = [];
+			var done = false;
+			while (!done) {
+				var mirror = await __zhMirrorPick(mirrors, parsed.path, ref.tag, origRef, tag0, tried);
+				if (!mirror) break;
+				tried.push(mirror);
+				var mirrorRef = mirror + '/' + parsed.path + ':' + ref.tag;
+				console.log(tag0 + ' 预拉取 ' + origRef + ' ← ' + mirrorRef);
+				var last = 0;
+				var pr = await run(['pull', mirrorRef], null, 30 * 60 * 1000, function (line) {
+					// docker pull 非 TTY 下逐层输出状态,限流避免刷屏
+					var now = Date.now();
+					if (now - last > 3000 || /^(Status|Digest|Error|error)/.test(line)) {
+						last = now;
+						console.log(tag0 + '   ' + line);
+					}
+				});
+				if (pr.code !== 0) {
+					console.warn(tag0 + ' ' + mirror + ' 拉取失败: ' + pr.out.trim().split('\n').pop());
+					continue;
 				}
-			});
-			if (pr.code !== 0) {
-				console.warn(tag0 + ' 镜像站拉取失败,交给 compose 从原地址拉取: ' + pr.out.trim().split('\n').pop());
-				continue;
+				var tr = await run(['tag', mirrorRef, origRef], null, 30000);
+				if (tr.code !== 0) {
+					console.warn(tag0 + ' tag 回原名失败: ' + tr.out.trim());
+					continue;
+				}
+				console.log(tag0 + ' ' + origRef + ' 已通过 ' + mirror + ' 拉取');
+				done = true;
 			}
-			var tr = await run(['tag', mirrorRef, origRef], null, 30000);
-			if (tr.code !== 0) {
-				console.warn(tag0 + ' tag 回原名失败,交给 compose 从原地址拉取: ' + tr.out.trim());
-				continue;
-			}
-			console.log(tag0 + ' ' + origRef + ' 已通过 ' + mirror + ' 拉取');
+			if (!done) console.warn(tag0 + ' 无可用镜像站,交给 compose 从原地址拉取: ' + origRef);
 		}
 	} catch (e) {
 		console.warn(tag0 + ' 预拉取异常,跳过: ' + ((e && e.message) || String(e)));

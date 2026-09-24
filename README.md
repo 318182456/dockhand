@@ -37,16 +37,17 @@ volumes:
 
 在 Dockhand 里拉取镜像(镜像页拉取、创建/更新容器、自动更新、Stack 部署)时,会自动改从国内镜像站拉取,完成后 tag 回原名,容器引用与界面显示均不变:
 
-| 原 registry | 镜像站 |
+| 原 registry | 镜像站(按顺序尝试) |
 |---|---|
-| `docker.io` | `docker.1ms.run` |
-| `ghcr.io` | `ghcr.nju.edu.cn` |
-| `gcr.io` | `gcr.nju.edu.cn` |
-| `quay.io` | `quay.nju.edu.cn` |
-| `registry.k8s.io` | `k8s.nju.edu.cn` |
-| `nvcr.io` | `nvcr.nju.edu.cn` |
+| `docker.io` | `docker.m.daocloud.io` → `docker.xuanyuan.me` → `docker.1ms.run` → `docker.linkos.org` |
+| `ghcr.io` | `ghcr.m.daocloud.io` → `ghcr.1ms.run` → `ghcr.linkos.org` → `ghcr.nju.edu.cn` |
+| `gcr.io` | `gcr.m.daocloud.io` → `gcr.nju.edu.cn` → `gcr.linkos.org` |
+| `quay.io` | `quay.m.daocloud.io` → `quay.dockerproxy.net` → `quay.linkos.org` → `quay.nju.edu.cn` |
+| `registry.k8s.io` | `k8s.m.daocloud.io` → `k8s.linkos.org` → `k8s.nju.edu.cn` |
+| `nvcr.io` | `nvcr.m.daocloud.io` → `nvcr.1ms.run` → `nvcr.nju.edu.cn` |
 
-- 镜像站失败时自动回退到原地址,最差等同未开启
+- 拉取前逐个探测镜像站:取 manifest 并读取最大层的前 1MB,12 秒内读完才采用,否则跳过换下一个。可以识别白名单拒绝(如 daocloud 对个人镜像返回 403)、冷门镜像长时间回源(如 NJU)和限速过低的站点
+- 全部镜像站不可用或拉取失败时回退到原地址,最差等同未开启
 - 已在 Dockhand 中配置凭据的 registry(私有镜像)不走镜像站
 - 拉取后本地会多出一个镜像站名称的 tag(如 `ghcr.nju.edu.cn/xxx`),指向同一镜像、不占额外空间;请勿删除,更新检测依赖它记录的 digest
 - Stack 部署:执行 `docker compose up/pull` 前按相同参数解析镜像列表并预拉取,拉取语义与 compose 一致(`up` 只拉本地缺失的,`--pull always` 全部拉,`--pull never` 跳过);预拉取失败则由 compose 照常从原地址拉取。日志前缀 `[ZhMirror]`
@@ -58,8 +59,8 @@ volumes:
     environment:
       # 关闭
       - ZH_REGISTRY_MIRRORS=off
-      # 或自定义(完全替换默认映射)
-      # - ZH_REGISTRY_MIRRORS=docker.io=docker.1ms.run,ghcr.io=ghcr.nju.edu.cn
+      # 或自定义(完全替换默认映射,| 分隔多个镜像站,按顺序尝试)
+      # - ZH_REGISTRY_MIRRORS=docker.io=docker.m.daocloud.io|docker.1ms.run,ghcr.io=ghcr.1ms.run|ghcr.nju.edu.cn
 ```
 
 ## 维护翻译
