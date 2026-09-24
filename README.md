@@ -33,6 +33,34 @@ volumes:
 
 镜像标签与上游版本一一对应(如 `v1.0.40`),另有 `latest`。
 
+## 镜像加速(默认开启)
+
+在 Dockhand 里拉取镜像(镜像页拉取、创建/更新容器、自动更新)时,会自动改从国内镜像站拉取,完成后 tag 回原名,容器引用与界面显示均不变:
+
+| 原 registry | 镜像站 |
+|---|---|
+| `docker.io` | `docker.1ms.run` |
+| `ghcr.io` | `ghcr.nju.edu.cn` |
+| `gcr.io` | `gcr.nju.edu.cn` |
+| `quay.io` | `quay.nju.edu.cn` |
+| `registry.k8s.io` | `k8s.nju.edu.cn` |
+| `nvcr.io` | `nvcr.nju.edu.cn` |
+
+- 镜像站失败时自动回退到原地址,最差等同未开启
+- 已在 Dockhand 中配置凭据的 registry(私有镜像)不走镜像站
+- 拉取后本地会多出一个镜像站名称的 tag(如 `ghcr.nju.edu.cn/xxx`),指向同一镜像、不占额外空间;请勿删除,更新检测依赖它记录的 digest
+- 暂不覆盖 Stack(compose)部署时由 `docker compose` 自行发起的拉取
+
+通过环境变量 `ZH_REGISTRY_MIRRORS` 调整:
+
+```yaml
+    environment:
+      # 关闭
+      - ZH_REGISTRY_MIRRORS=off
+      # 或自定义(完全替换默认映射)
+      # - ZH_REGISTRY_MIRRORS=docker.io=docker.1ms.run,ghcr.io=ghcr.nju.edu.cn
+```
+
 ## 维护翻译
 
 修订 `scripts/translation-dict.json`(英文原文 → 中文,键按 DOM 文本节点整段精确匹配;≥10 字符的长词条会额外参与子串回退替换)后,手动触发一次 `Sync, Translate and Publish Docker` workflow 即可重新发布当前版本。

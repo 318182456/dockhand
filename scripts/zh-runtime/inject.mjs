@@ -7,10 +7,11 @@
  * 2. 在含 SSR HTML 模板的 server chunk(以 app.html 的 data-sveltekit-preload-data 为指纹)
  *    的 </head> 前插入 <script defer src=/zh-translate.js></script>。
  *    注入片段刻意不含引号/反斜杠/反引号/${,可安全嵌入任意 JS 字符串字面量上下文。
+ * 3. 包装 server 端 dockerFetch,拉取镜像时自动改走国内镜像站(见 registry-mirror.template.js)。
  *
  * 用法: node inject.mjs <buildDir> <assetDir>
  *   buildDir — SvelteKit adapter-node 产物目录(含 client/ server/ handler.js)
- *   assetDir — 存放 dict.json 与 translator.template.js 的目录
+ *   assetDir — 存放 dict.json、translator.template.js、registry-mirror.template.js 的目录
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -80,3 +81,41 @@ if (patched === 0) {
 	process.exit(1);
 }
 console.log('注入完成,共命中 ' + patched + ' 个文件');
+
+// ---- 3) 镜像加速:包装 server 端 dockerFetch ----
+// server 产物是压缩过的,函数名不可依赖;以函数开头的路径穿越守卫为指纹定位 dockerFetch:
+//   async function C(e,n={},t){if(e.includes(".."))throw new Error("Invalid Docker API path");
+// 把原函数改名为 C__zhOrig,再追加同名包装函数(函数声明会提升,chunk 内调用与 export 都自动指向包装)。
+const FETCH_RE = /async function ([\w$]+)\(([\w$]+),([\w$]+)=\{\},([\w$]+)\)\{if\(\2\.includes\("\.\."\)\)throw new Error\("Invalid Docker API path"\)/g;
+const MIRROR_MARK = '__zhMirrorFetch';
+const mirrorJs = fs.readFileSync(path.join(assetDir, 'registry-mirror.template.js'), 'utf8');
+
+let mirrorPatched = 0;
+for (const file of walk(path.join(buildDir, 'server'))) {
+	if (!file.endsWith('.js')) continue;
+	let s = fs.readFileSync(file, 'utf8');
+	if (!s.includes('Invalid Docker API path')) continue;
+	if (s.includes(MIRROR_MARK)) { mirrorPatched++; continue; } // 幂等
+	const hits = [...s.matchAll(FETCH_RE)];
+	if (hits.length !== 1) {
+		console.error('错误: ' + path.relative(buildDir, file) + ' 中 dockerFetch 指纹命中 ' + hits.length + ' 次,必须恰好 1 次');
+		process.exit(1);
+	}
+	const name = hits[0][1];
+	const orig = name + '__zhOrig';
+	if (s.includes(orig)) {
+		console.error('错误: 标识符 ' + orig + ' 已存在,无法安全改名');
+		process.exit(1);
+	}
+	s = s.slice(0, hits[0].index) + hits[0][0].replace('async function ' + name + '(', 'async function ' + orig + '(') +
+		s.slice(hits[0].index + hits[0][0].length);
+	s += '\n;async function ' + name + '(p,o={},e){return __zhMirrorFetch(' + orig + ',p,o,e)}\n' + mirrorJs;
+	fs.writeFileSync(file, s);
+	console.log('已注入镜像加速: ' + path.relative(buildDir, file) + '(dockerFetch = ' + name + ')');
+	mirrorPatched++;
+}
+
+if (mirrorPatched !== 1) {
+	console.error('错误: 镜像加速补丁命中 ' + mirrorPatched + ' 个文件,预期恰好 1 个(上游产物结构可能已变化)');
+	process.exit(1);
+}

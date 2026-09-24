@@ -14,6 +14,7 @@ FROM fnsys/dockhand:${UPSTREAM_VERSION} AS official
 FROM node:24-slim AS patcher
 COPY --from=official /app/build /build
 COPY scripts/zh-runtime/translator.template.js /zh/translator.template.js
+COPY scripts/zh-runtime/registry-mirror.template.js /zh/registry-mirror.template.js
 COPY scripts/zh-runtime/inject.mjs /zh/inject.mjs
 COPY scripts/translation-dict.json /zh/dict.json
 RUN node /zh/inject.mjs /build /zh
