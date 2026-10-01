@@ -15,6 +15,7 @@
  *
  * Stack 部署由 docker compose 自行拉取,不经过 dockerFetch。
  * inject.mjs 同时把本文件追加到 compose 执行 chunk,在 spawn 前调用 __zhComposePrepull 预拉取。
+ * 更新检查直接 fetch registry,同样不经过 dockerFetch;文件末尾包装全局 fetch,让 Docker Hub 的 digest 查询走镜像站。
  *
  * 环境变量 ZH_REGISTRY_MIRRORS:
  *   未设置  → 使用下方默认映射
@@ -453,4 +454,164 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 	} catch (e) {
 		console.warn(tag0 + ' 预拉取异常,跳过: ' + ((e && e.message) || String(e)));
 	}
+}
+
+/**
+ * 更新检查经镜像站查询 Docker Hub
+ * 上游的更新检查/自动更新由 Dockhand 进程直接 fetch registry:先 GET https://index.docker.io/v2/ 拿 challenge,
+ * 再到 auth.docker.io 取匿名 token,最后 HEAD/GET manifest 比对 Docker-Content-Digest。
+ * auth.docker.io 在国内常常连不上,取 token 失败后上游会匿名请求 manifest,得到 401,界面就显示成"私有镜像或缺少凭据"。
+ *
+ * 这里包装全局 fetch,只处理 Docker Hub 的匿名请求:
+ *   1) GET <hub>/v2/                     → 直接返回标准 challenge,不发网络请求
+ *   2) 匿名 GET auth.docker.io/token     → 返回占位 token,不发网络请求
+ *   3) <hub>/v2/<repo>/...(带占位 token 或无凭据)→ 按顺序改发到镜像站,镜像站各自走 token 流程;
+ *      全部失败时回退到 Docker Hub 原地址(真实取 token)
+ * 带凭据(Basic)的 token 请求、真实 token 的请求原样放行,Docker Hub 凭据不会发给镜像站。
+ * 镜像站返回的 Docker-Content-Digest 与 Docker Hub 一致,上游的 digest 比对不受影响。
+ */
+var __zhHubHosts = { 'index.docker.io': 1, 'registry-1.docker.io': 1, 'registry.hub.docker.com': 1, 'registry.docker.io': 1, 'docker.io': 1 };
+var __zhHubPlaceholder = 'zh-mirror-anonymous';
+var __zhHubTokens = new Map(); // mirror|repo → { auth, exp }
+var __zhHubCooldown = new Map(); // mirror → 不可达时的冷却截止时间
+var __zhHubTimeoutMs = 10000;
+var __zhHubCooldownMs = 5 * 60 * 1000;
+
+function __zhHeaderGet(headers, name) {
+	if (!headers) return null;
+	if (typeof headers.get === 'function') return headers.get(name);
+	var lower = name.toLowerCase();
+	for (var k in headers) if (k.toLowerCase() === lower) return headers[k];
+	return null;
+}
+
+// 合并调用方的 signal 与本地超时
+function __zhHubSignal(signal) {
+	var t = AbortSignal.timeout(__zhHubTimeoutMs);
+	return signal && typeof AbortSignal.any === 'function' ? AbortSignal.any([signal, t]) : t;
+}
+
+// 向镜像站(或 Docker Hub)取匿名 pull token;无需认证返回 '',无法取得返回 null
+async function __zhHubAuth(orig, host, repo, signal) {
+	var key = host + '|' + repo;
+	var hit = __zhHubTokens.get(key);
+	if (hit && hit.exp > Date.now()) return hit.auth;
+	var c = await orig('https://' + host + '/v2/', { headers: { 'User-Agent': 'Dockhand/1.0' }, signal: __zhHubSignal(signal) });
+	if (c.body) await c.body.cancel().catch(function () {});
+	var auth = null;
+	var ttl = 60;
+	if (c.ok) {
+		auth = '';
+	} else if (c.status === 401) {
+		var wa = c.headers.get('www-authenticate') || '';
+		var realm = /realm="([^"]+)"/i.exec(wa);
+		if (!/^bearer/i.test(wa) || !realm) return null;
+		var svc = /service="([^"]+)"/i.exec(wa);
+		var u = new URL(realm[1]);
+		if (svc) u.searchParams.set('service', svc[1]);
+		u.searchParams.set('scope', 'repository:' + repo + ':pull');
+		var tr = await orig(u.toString(), { headers: { 'User-Agent': 'Dockhand/1.0' }, signal: __zhHubSignal(signal) });
+		var tj = tr.ok ? await tr.json().catch(function () { return {}; }) : {};
+		if (!tr.ok && tr.body) await tr.body.cancel().catch(function () {});
+		var tok = tj.token || tj.access_token;
+		if (!tok) return null;
+		auth = 'Bearer ' + tok;
+		if (tj.expires_in > 0) ttl = tj.expires_in;
+	} else {
+		return null;
+	}
+	// 提前 10 秒过期,最长缓存 5 分钟
+	__zhHubTokens.set(key, { auth: auth, exp: Date.now() + Math.min(Math.max(ttl - 10, 10), 300) * 1000 });
+	return auth;
+}
+
+async function __zhHubRequest(orig, host, pathAndQuery, init, auth) {
+	var h = {};
+	var src = init.headers;
+	if (src && typeof src.forEach === 'function') src.forEach(function (v, k) { h[k] = v; });
+	else if (src) for (var k in src) h[k] = src[k];
+	for (var k2 in h) if (k2.toLowerCase() === 'authorization') delete h[k2];
+	if (auth) h.Authorization = auth;
+	var opts = Object.assign({}, init, { headers: h, signal: __zhHubSignal(init.signal) });
+	return orig('https://' + host + pathAndQuery, opts);
+}
+
+async function __zhHubViaMirror(orig, url, init, mirrors) {
+	var m = /^\/v2\/(.+?)\/(manifests|tags|blobs|referrers)\//.exec(url.pathname);
+	if (!m) return null;
+	var repo = m[1];
+	var pathAndQuery = url.pathname + url.search;
+	var last = null;
+	for (var i = 0; i < mirrors.length; i++) {
+		var mirror = mirrors[i];
+		if ((__zhHubCooldown.get(mirror) || 0) > Date.now()) continue;
+		try {
+			for (var attempt = 0; attempt < 2; attempt++) {
+				var auth = await __zhHubAuth(orig, mirror, repo, init.signal);
+				if (auth === null) break;
+				var res = await __zhHubRequest(orig, mirror, pathAndQuery, init, auth);
+				if (res.ok) return res;
+				if (res.body) await res.body.cancel().catch(function () {});
+				// token 过期或被拒:清缓存重试一次
+				if (res.status === 401 && attempt === 0 && auth) { __zhHubTokens.delete(mirror + '|' + repo); continue; }
+				last = mirror + ' HTTP ' + res.status;
+				break;
+			}
+		} catch (e) {
+			if (init.signal && init.signal.aborted) throw e;
+			__zhHubCooldown.set(mirror, Date.now() + __zhHubCooldownMs);
+			last = mirror + ' ' + (((e && e.cause && e.cause.code) || (e && e.message)) || String(e));
+			console.warn('[ZhMirror] 更新检查: ' + mirror + ' 不可达,' + Math.round(__zhHubCooldownMs / 60000) + ' 分钟内跳过: ' + last);
+		}
+	}
+	console.warn('[ZhMirror] 更新检查: 镜像站均不可用,回退 Docker Hub: ' + repo + (last ? '(' + last + ')' : ''));
+	return null;
+}
+
+async function __zhRegistryFetch(orig, input, init) {
+	if (typeof input !== 'string' && !(input instanceof URL)) return orig(input, init);
+	var raw = String(input);
+	if (raw.indexOf('docker.io') === -1) return orig(input, init);
+	var url;
+	try { url = new URL(raw); } catch (e) { return orig(input, init); }
+	if (url.protocol !== 'https:') return orig(input, init);
+	var host = url.hostname.toLowerCase();
+	var isHub = !!__zhHubHosts[host];
+	if (!isHub && host !== 'auth.docker.io') return orig(input, init);
+	var mirrors = __zhMirrorTable()['docker.io'];
+	if (!mirrors) return orig(input, init);
+	init = init || {};
+	var method = (init.method || 'GET').toUpperCase();
+	var auth = __zhHeaderGet(init.headers, 'authorization');
+
+	// 1) challenge:与 Docker Hub 一致,realm 指向 auth.docker.io
+	if (isHub && url.pathname === '/v2/' && method === 'GET' && !auth) {
+		return new Response(null, { status: 401, headers: {
+			'WWW-Authenticate': 'Bearer realm="https://auth.docker.io/token",service="registry.docker.io"'
+		} });
+	}
+	// 2) 匿名取 token:返回占位 token;带凭据则放行到真实 auth.docker.io
+	if (host === 'auth.docker.io') {
+		if (url.pathname !== '/token' || auth) return orig(input, init);
+		return new Response(JSON.stringify({ token: __zhHubPlaceholder, access_token: __zhHubPlaceholder, expires_in: 300 }), {
+			status: 200, headers: { 'Content-Type': 'application/json' }
+		});
+	}
+	// 3) 匿名(占位 token 或无凭据)的 /v2/<repo>/... 请求改走镜像站
+	if (url.pathname.indexOf('/v2/') !== 0 || (auth && auth !== 'Bearer ' + __zhHubPlaceholder)) return orig(input, init);
+	if (method !== 'GET' && method !== 'HEAD') return orig(input, init);
+	var res = await __zhHubViaMirror(orig, url, init, mirrors);
+	if (res) return res;
+	// 回退:到 Docker Hub 真实取匿名 token 后请求原地址
+	var m = /^\/v2\/(.+?)\/(manifests|tags|blobs|referrers)\//.exec(url.pathname);
+	var hubAuth = null;
+	if (m) {
+		try { hubAuth = await __zhHubAuth(orig, 'registry-1.docker.io', m[1], init.signal); } catch (e) { hubAuth = null; }
+	}
+	return __zhHubRequest(orig, host, url.pathname + url.search, init, hubAuth);
+}
+
+if (typeof globalThis.fetch === 'function' && !globalThis.__zhRegistryFetchOrig) {
+	globalThis.__zhRegistryFetchOrig = globalThis.fetch;
+	globalThis.fetch = function (input, init) { return __zhRegistryFetch(globalThis.__zhRegistryFetchOrig, input, init); };
 }

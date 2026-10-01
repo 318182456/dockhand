@@ -53,6 +53,7 @@ volumes:
 - 已在 Dockhand 中配置凭据的 registry(私有镜像)不走镜像站
 - 拉取后本地会多出一个镜像站名称的 tag(如 `ghcr.nju.edu.cn/xxx`),指向同一镜像、不占额外空间;请勿删除,更新检测依赖它记录的 digest
 - Stack 部署:执行 `docker compose up/pull` 前按相同参数解析镜像列表并预拉取,拉取语义与 compose 一致(`up` 只拉本地缺失的,`--pull always` 全部拉,`--pull never` 跳过);预拉取失败则由 compose 照常从原地址拉取。日志前缀 `[ZhMirror]`
+- 更新检查/自动更新:查询 Docker Hub 镜像的远端 digest 时同样按上表顺序改走镜像站,不再依赖 `auth.docker.io`(国内常连不上,连不上时上游会把公开镜像误报为 "Registry denied access (401) - private image or missing credentials")。全部镜像站失败时回退到 Docker Hub;已在 Dockhand 配置 Docker Hub 凭据时仍直连 Docker Hub,凭据不会发给镜像站
 - 仅本机/直连环境生效;Hawser 远程 agent 环境的拉取在 agent 端进行,不受影响
 
 通过环境变量 `ZH_REGISTRY_MIRRORS` 调整:
