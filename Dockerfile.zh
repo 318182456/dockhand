@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.4
 # =============================================================================
-# Dockhand 中文化 overlay 镜像
-# 基于上游官方镜像 fnsys/dockhand,构建期注入运行时 DOM 翻译脚本。
+# Dockhand 国内镜像加速 overlay 镜像
+# 基于上游官方镜像 fnsys/dockhand,构建期仅注入服务端镜像加速补丁。
 # 不合并上游源码、不自行编译前端 —— 上游怎么发版,这里只做一层轻量补丁。
 # =============================================================================
 ARG UPSTREAM_VERSION=latest
@@ -9,14 +9,12 @@ ARG UPSTREAM_VERSION=latest
 FROM fnsys/dockhand:${UPSTREAM_VERSION} AS official
 
 # -----------------------------------------------------------------------------
-# 注入阶段:生成翻译脚本 + 给 SSR HTML 模板插入 <script> 标签
+# 注入阶段:包装镜像拉取与 Stack 预拉取
 # -----------------------------------------------------------------------------
 FROM node:24-slim AS patcher
 COPY --from=official /app/build /build
-COPY scripts/zh-runtime/translator.template.js /zh/translator.template.js
 COPY scripts/zh-runtime/registry-mirror.template.js /zh/registry-mirror.template.js
 COPY scripts/zh-runtime/inject.mjs /zh/inject.mjs
-COPY scripts/translation-dict.json /zh/dict.json
 RUN node /zh/inject.mjs /build /zh
 
 # -----------------------------------------------------------------------------

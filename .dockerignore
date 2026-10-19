@@ -1,4 +1,4 @@
-# overlay 构建(Dockerfile.zh)只需要 scripts/zh-runtime 与 scripts/translation-dict.json
+# overlay 构建(Dockerfile.zh)只需要 scripts/zh-runtime 内的镜像加速脚本
 .git/
 .history/
 node_modules/

@@ -1,17 +1,16 @@
-# Dockhand 中文化镜像
+# Dockhand 国内镜像加速版
 
-[Dockhand](https://github.com/Finsys/dockhand)(现代化 Docker 管理界面)的中文化发行版。
+基于 [Dockhand](https://github.com/Finsys/dockhand)(现代化 Docker 管理界面)的官方镜像,追加国内镜像加速功能。
+
+上游自 [v1.0.54](https://github.com/Finsys/dockhand/releases/tag/v1.0.54) 起已原生支持简体中文。本仓库已移除中文翻译注入层,界面语言由上游处理。
 
 ## 工作方式
 
 本仓库**不包含也不修改上游源码**。CI 每 6 小时检测一次上游 release,发现新版本后:
 
 1. 拉取上游官方镜像 `fnsys/dockhand:<tag>`
-2. 构建期([Dockerfile.zh](Dockerfile.zh))将翻译字典内嵌进 [scripts/zh-runtime/translator.template.js](scripts/zh-runtime/translator.template.js),生成 `build/client/zh-translate.js`,并在 SSR HTML 模板 `</head>` 前注入 `<script>` 标签([scripts/zh-runtime/inject.mjs](scripts/zh-runtime/inject.mjs))
-3. 浏览器端由 MutationObserver 按字典([scripts/translation-dict.json](scripts/translation-dict.json),1700+ 条)实时翻译界面文本
-4. 重新打包发布;已构建版本记录于 [VERSION](VERSION)
-
-上游怎么发版,这里只做一层轻量补丁——版本升级零冲突。
+2. 构建期([Dockerfile.zh](Dockerfile.zh))通过 [scripts/zh-runtime/inject.mjs](scripts/zh-runtime/inject.mjs) 注入服务端镜像加速补丁,支持镜像拉取、Stack 预拉取及更新检查
+3. 重新打包发布;已构建版本记录于 [VERSION](VERSION)
 
 ## 使用
 
@@ -48,7 +47,8 @@ volumes:
 
 标 `*` 的为境外节点,无代理时通常较慢,仅作兜底。
 
-- 拉取前逐个探测镜像站:取 manifest 并读取最大层的前 1MB,12 秒内读完才采用,否则跳过换下一个。可以识别白名单拒绝(如 daocloud 对个人镜像返回 403)、冷门镜像长时间回源(如 NJU)和限速过低的站点
+- 拉取前逐个探测镜像站:取 manifest 并读取最大层的前 1MB,12 秒内读完才采用(小层读取整层),单站探测总计最多 20 秒,否则跳过换下一个。可以识别白名单拒绝(如 daocloud 对个人镜像返回 403)、冷门镜像长时间回源(如 NJU)和限速过低的站点
+- 同一镜像的并发探测合并为一次,成功结果缓存 60 秒、失败结果缓存 15 秒,最多保留 256 条;实际拉取失败立即使成功缓存失效。缓存只用于选择镜像站,不缓存镜像内容或更新检查的 digest
 - 全部镜像站不可用或拉取失败时回退到原地址,最差等同未开启
 - 已在 Dockhand 中配置凭据的 registry(私有镜像)不走镜像站
 - 拉取后本地会多出一个镜像站名称的 tag(如 `ghcr.nju.edu.cn/xxx`),指向同一镜像、不占额外空间;请勿删除,更新检测依赖它记录的 digest
@@ -66,12 +66,6 @@ volumes:
       # - ZH_REGISTRY_MIRRORS=docker.io=docker.m.daocloud.io|docker.1ms.run,ghcr.io=ghcr.1ms.run|ghcr.nju.edu.cn
 ```
 
-## 维护翻译
-
-修订 `scripts/translation-dict.json`(英文原文 → 中文,键按 DOM 文本节点整段精确匹配;≥10 字符的长词条会额外参与子串回退替换)后,手动触发一次 `Sync, Translate and Publish Docker` workflow 即可重新发布当前版本。
-
-代码/日志/终端/编辑器(`pre`/`code`/`textarea`/xterm/CodeMirror/Monaco)内的文本不参与翻译。
-
 ## License
 
-上游项目许可见 [LICENSE.txt](LICENSE.txt)。本仓库仅追加运行时翻译层,不改变上游许可条款。
+上游项目许可见 [LICENSE.txt](LICENSE.txt)。本仓库仅追加镜像加速补丁,不改变上游许可条款。

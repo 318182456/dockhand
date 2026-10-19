@@ -1,9 +1,9 @@
-name: Sync, Translate and Publish Docker
+name: Sync and Publish Docker
 
-# 方案:中文化 overlay(运行时 DOM 翻译)
+# 方案:国内镜像加速 overlay(界面翻译使用上游原生支持)
 # 不再合并上游源码、不再自行编译前端。检测到上游发布新 tag 后,
-# 直接基于官方镜像 fnsys/dockhand:<tag> 注入翻译脚本并重新发布。
-# 本仓库源码仅作参考存档,构建不依赖它;已构建版本记录在 VERSION 文件。
+# 直接基于官方镜像 fnsys/dockhand:<tag> 注入服务端镜像加速补丁并重新发布。
+# 不修改上游源码;已构建版本记录在 VERSION 文件。
 
 on:
   workflow_dispatch: # 手动触发:强制重建当前最新上游版本(即使 VERSION 已一致)
@@ -15,7 +15,7 @@ permissions:
   packages: write
 
 jobs:
-  build-zh-overlay:
+  build-mirror-overlay:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -78,7 +78,7 @@ jobs:
             type=raw,value=latest
             type=raw,value=${{ steps.up.outputs.latest }}
 
-      - name: Build and push zh overlay image
+      - name: Build and push mirror overlay image
         if: steps.up.outputs.build == 'true'
         uses: docker/build-push-action@v6
         with:
@@ -100,5 +100,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           echo "${{ steps.up.outputs.latest }}" > VERSION
           git add VERSION
-          git commit -m "chore: 发布 ${{ steps.up.outputs.latest }} 中文化镜像"
+          git commit -m "chore: 发布 ${{ steps.up.outputs.latest }} 镜像加速版"
           git push origin HEAD:main

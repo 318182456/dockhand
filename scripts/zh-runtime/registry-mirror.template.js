@@ -1,11 +1,11 @@
 
 /**
- * Dockhand 中文化:拉取镜像时自动改走国内镜像站(服务端)
+ * Dockhand 镜像加速:拉取镜像时自动改走国内镜像站(服务端)
  * 由 inject.mjs 在镜像构建期追加到含 dockerFetch 的 server chunk 末尾,
  * 并把原 dockerFetch 改名为 <名称>__zhOrig,由 __zhMirrorFetch 包一层。
  *
  * 流程:POST /images/create 且 registry 命中映射表 →
- *   0) 按顺序探测该 registry 的各镜像站(取 manifest + 最大层前 64KB),选第一个在限时内出数据的;
+ *   0) 按顺序探测该 registry 的各镜像站(取 manifest + 最大层前 1MB),选第一个在限时内出数据的;
  *      回源缓存型镜像站(如 NJU)对冷门镜像会一直不吐数据,探测可在十几秒内识别并跳过
  *   1) 从镜像站拉取,进度原样转发给调用方
  *   2) 成功后 tag 回原名(容器/compose 引用、界面显示均不变)
@@ -98,25 +98,72 @@ var __zhMirrorAccept = [
 // 探测门槛:最大层前 1MB 须在 12s 内读完(≈85KB/s),慢于此的镜像站跳过
 var __zhMirrorProbeBytes = 1048576;
 var __zhMirrorProbeMs = 12000;
+var __zhMirrorProbeTotalMs = 20000;
+// 模板可能注入多个 chunk,共享探测状态,不缓存 manifest/digest 或拉取结果。
+var __zhMirrorProbeState = globalThis.__zhMirrorProbeState || (globalThis.__zhMirrorProbeState = new Map());
+var __zhMirrorProbeCacheLimit = 256;
+var __zhMirrorProbeSuccessMs = 60000;
+var __zhMirrorProbeFailureMs = 15000;
+
+function __zhMirrorProbeKey(mirror, repoPath, tag) {
+	return JSON.stringify([mirror, repoPath, tag]);
+}
+
+function __zhMirrorProbeStore(key, value) {
+	__zhMirrorProbeState.delete(key);
+	while (__zhMirrorProbeState.size >= __zhMirrorProbeCacheLimit) {
+		__zhMirrorProbeState.delete(__zhMirrorProbeState.keys().next().value);
+	}
+	__zhMirrorProbeState.set(key, value);
+}
+
+function __zhMirrorProbeFailed(mirror, repoPath, tag, reason) {
+	__zhMirrorProbeStore(__zhMirrorProbeKey(mirror, repoPath, tag), {
+		result: { ok: false, ms: 0, reason: reason }, exp: Date.now() + __zhMirrorProbeFailureMs
+	});
+}
+
+// 只复用短期可用性:实际拉取仍由 Docker 校验,失败立即覆盖成功缓存。
+async function __zhMirrorProbe(mirror, repoPath, tag) {
+	var key = __zhMirrorProbeKey(mirror, repoPath, tag);
+	var hit = __zhMirrorProbeState.get(key);
+	if (hit && hit.pending) return hit.pending;
+	if (hit && hit.exp > Date.now()) return hit.result;
+	var entry = {};
+	entry.pending = __zhMirrorProbeUncached(mirror, repoPath, tag).then(function (result) {
+		// 已被实际拉取失败覆盖时,不能用较早的探测结果恢复成功缓存。
+		if (__zhMirrorProbeState.get(key) === entry) {
+			entry.result = result;
+			entry.exp = Date.now() + (result.ok ? __zhMirrorProbeSuccessMs : __zhMirrorProbeFailureMs);
+			delete entry.pending;
+		}
+		return result;
+	});
+	__zhMirrorProbeStore(key, entry);
+	return entry.pending;
+}
 var __zhMirrorArch ={ x64: 'amd64', arm64: 'arm64', arm: 'arm', ppc64: 'ppc64le', s390x: 's390x' }[process.arch] || process.arch;
 
 /**
- * 探测镜像站能否真正提供该镜像:取 manifest(多架构时选本机架构),再取最大层的前 64KB。
+ * 探测镜像站能否真正提供该镜像:取 manifest(多架构时选本机架构),再取最大层的前 1MB(小层取整层)。
  * 由 Dockhand 进程直接请求,与 daemon 所在网络通常一致。返回 { ok, ms, reason }。
  */
-async function __zhMirrorProbe(mirror, repoPath, tag) {
+async function __zhMirrorProbeUncached(mirror, repoPath, tag) {
 	var t0 = Date.now();
 	var base = 'https://' + mirror + '/v2/' + repoPath;
 	var auth = null;
 	var get = async function (url, accept, ms, firstBytes) {
+		ms = Math.min(ms, __zhMirrorProbeTotalMs - (Date.now() - t0));
+		if (ms <= 0) throw new Error('探测总时间超过 ' + (__zhMirrorProbeTotalMs / 1000) + 's');
 		var ac = new AbortController();
 		var timer = setTimeout(function () { ac.abort(); }, ms);
+		var reader = null;
 		try {
 			var build = function () {
 				var h = {};
 				if (accept) h.Accept = accept;
 				if (auth) h.Authorization = auth;
-				if (firstBytes) h.Range = 'bytes=0-' + (__zhMirrorProbeBytes - 1);
+				if (firstBytes) h.Range = 'bytes=0-' + (firstBytes - 1);
 				return h;
 			};
 			var res = await fetch(url, { headers: build(), signal: ac.signal });
@@ -132,6 +179,7 @@ async function __zhMirrorProbe(mirror, repoPath, tag) {
 					(svc ? '&service=' + encodeURIComponent(svc[1]) : '');
 				var tr = await fetch(turl, { signal: ac.signal });
 				var tj = tr.ok ? await tr.json() : {};
+				if (!tr.ok && tr.body) await tr.body.cancel().catch(function () {});
 				var tok = tj.token || tj.access_token;
 				if (!tok) throw new Error('获取 token 失败 HTTP ' + tr.status);
 				auth = 'Bearer ' + tok;
@@ -143,22 +191,25 @@ async function __zhMirrorProbe(mirror, repoPath, tag) {
 			}
 			if (!firstBytes) return await res.json();
 			// 读满 __zhMirrorProbeBytes(或整层)才算通过:只看首包会放过"能连通但极慢"的镜像站
-			var reader = res.body.getReader();
+			reader = res.body.getReader();
 			var got = 0;
 			for (;;) {
 				var r = await reader.read();
 				if (r.done) break;
 				got += r.value.length;
-				if (got >= __zhMirrorProbeBytes) break;
+				if (got >= firstBytes) break;
 			}
-			reader.cancel().catch(function () {});
-			if (!got) throw new Error('层数据为空');
+			if (got < firstBytes) throw new Error('层数据不足: ' + got + '/' + firstBytes + ' bytes');
 			return got;
 		} catch (e) {
-			if (ac.signal.aborted) throw new Error(Math.round(ms / 1000) + 's 内无响应');
+			if (ac.signal.aborted) throw new Error(Math.round(ms / 1000) + 's 探测超时');
 			throw e;
 		} finally {
 			clearTimeout(timer);
+			if (reader) {
+				reader.cancel().catch(function () {});
+				reader.releaseLock();
+			}
 		}
 	};
 	try {
@@ -169,10 +220,12 @@ async function __zhMirrorProbe(mirror, repoPath, tag) {
 			if (!pick) throw new Error('manifest 列表中无可用平台');
 			m = await get(base + '/manifests/' + pick.digest, __zhMirrorAccept, 10000);
 		}
-		var layers = (m && m.layers) || [];
+		if (!m || m.schemaVersion !== 2 || !Array.isArray(m.layers)) throw new Error('无效的镜像 manifest');
+		var layers = m.layers;
 		if (layers.length) {
 			var big = layers.reduce(function (a, b) { return (b.size || 0) > (a.size || 0) ? b : a; });
-			await get(base + '/blobs/' + big.digest, null, __zhMirrorProbeMs, true);
+			if (!big.digest || !Number.isSafeInteger(big.size) || big.size <= 0) throw new Error('无效的镜像层描述');
+			await get(base + '/blobs/' + big.digest, null, __zhMirrorProbeMs, Math.min(big.size, __zhMirrorProbeBytes));
 		}
 		return { ok: true, ms: Date.now() - t0 };
 	} catch (e) {
@@ -246,6 +299,7 @@ async function __zhMirrorFetch(orig, path, opts, envId) {
 		res = null;
 	}
 	if (!res) {
+		__zhMirrorProbeFailed(mirror, ref.path, tag, firstError);
 		console.warn('[ZhMirror] ' + mirrored + ':' + tag + ' 拉取失败,回退原地址 ' + label + ': ' + firstError);
 		return orig(path, opts, envId);
 	}
@@ -299,6 +353,7 @@ async function __zhMirrorFetch(orig, path, opts, envId) {
 			}
 
 			if (failed) {
+				__zhMirrorProbeFailed(mirror, ref.path, tag, failed);
 				console.warn('[ZhMirror] ' + mirrored + ':' + tag + ' 拉取失败,回退原地址 ' + label + ': ' + failed);
 				emit({ status: '[镜像加速] 镜像站失败,回退原地址: ' + failed });
 				try {
@@ -438,6 +493,7 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 					}
 				});
 				if (pr.code !== 0) {
+					__zhMirrorProbeFailed(mirror, parsed.path, ref.tag, 'docker pull 失败');
 					console.warn(tag0 + ' ' + mirror + ' 拉取失败: ' + pr.out.trim().split('\n').pop());
 					continue;
 				}
