@@ -54,7 +54,7 @@ volumes:
 - 拉取后本地会多出一个镜像站名称的 tag(如 `ghcr.nju.edu.cn/xxx`),指向同一镜像、不占额外空间;请勿删除,更新检测依赖它记录的 digest
 - 自动回收旧镜像:拉取前记录原镜像与已配置镜像站标签对应的镜像 ID,每 30 秒检查一次。原标签已切换到新版、旧镜像不再被任何容器(含停止的容器)引用,且没有其他用途的标签时,按 ID 非强制删除旧镜像。普通拉取、容器更新和 Stack 预拉取均适用,不会执行全局 prune;Docker 的多标签/引用冲突会保留待重试。队列保存在数据目录的 `zh-image-cleanup.json`,重启后在下次访问对应环境或执行 Stack 操作时恢复。只回收本补丁记录到的旧版本,不会扫描删除历史遗留镜像;当前版本的镜像站标签继续保留供更新检测使用
 - Stack 部署:执行 `docker compose up/pull` 前按相同参数解析镜像列表并预拉取,拉取语义与 compose 一致(`up` 只拉本地缺失的,`--pull always` 全部拉,`--pull never` 跳过);预拉取失败则由 compose 照常从原地址拉取。日志前缀 `[ZhMirror]`
-- 更新检查/自动更新:查询 Docker Hub 镜像的远端 digest 时同样按上表顺序改走镜像站,不再依赖 `auth.docker.io`(国内常连不上,连不上时上游会把公开镜像误报为 "Registry denied access (401) - private image or missing credentials")。全部镜像站失败时回退到 Docker Hub;已在 Dockhand 配置 Docker Hub 凭据时仍直连 Docker Hub,凭据不会发给镜像站
+- 更新检查/自动更新:启动时从 `handler.js`/`index.js` 安装请求包装,覆盖独立 registry 模块,支持 `string`、`URL` 和 `Request`。查询上表 registry 的公共镜像元数据时逐站尝试镜像站;已配置且只对应一个源 registry 的镜像站域名(如 `ghcr.nju.edu.cn`)也支持换站。Docker Hub/GHCR 的匿名 challenge/token 无需直连源站;其他 registry 保留真实 challenge。全部镜像站失败后回源,如果源站也无法连接,仍如实报告错误。真实凭据和真实 token 不发给镜像站;关闭加速时请求原样放行。启动日志可查看 `[ZhMirror] 更新检查加速包装已安装`
 - 仅本机/直连环境生效;Hawser 远程 agent 环境的拉取在 agent 端进行,不受影响
 
 通过环境变量 `ZH_REGISTRY_MIRRORS` 调整:

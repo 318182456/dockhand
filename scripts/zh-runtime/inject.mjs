@@ -108,3 +108,25 @@ if (prepullPatched !== 1) {
 	console.error('错误: Stack 预拉取补丁命中 ' + prepullPatched + ' 个文件,预期恰好 1 个(上游产物结构可能已变化)');
 	process.exit(1);
 }
+
+// ---- 3) 启动时安装更新检查加速,先于 scheduler/hook 等入口捕获全局 fetch ----
+// 仅在 dockerFetch chunk 末尾安装会依赖该 chunk 的首次加载时机。
+// 官方 server.js 直接导入 handler.js,不会经过 adapter-node 的 index.js。
+// 两个入口都先导入 runtime,确保独立的 registry 模块也经过同一包装。
+const runtimeImport = "import './zh-registry-runtime.js';";
+if (!fs.existsSync(path.join(buildDir, 'handler.js'))) {
+	console.error('错误: adapter-node 入口 handler.js 不存在,无法保证更新检查补丁的加载顺序');
+	process.exit(1);
+}
+fs.writeFileSync(path.join(buildDir, 'zh-registry-runtime.js'), mirrorJs);
+for (const entryName of ['handler.js', 'index.js']) {
+	const entryFile = path.join(buildDir, entryName);
+	if (!fs.existsSync(entryFile)) continue;
+	const entry = fs.readFileSync(entryFile, 'utf8');
+	if (!entry.includes(runtimeImport)) {
+		const shebang = /^(#![^\n]*\n)/.exec(entry);
+		const offset = shebang ? shebang[0].length : 0;
+		fs.writeFileSync(entryFile, entry.slice(0, offset) + runtimeImport + '\n' + entry.slice(offset));
+	}
+	console.log('已注入更新检查启动补丁: ' + entryName);
+}
