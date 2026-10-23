@@ -36,7 +36,7 @@ volumes:
 
 在 Dockhand 里拉取镜像(镜像页拉取、创建/更新容器、自动更新、Stack 部署)时,会自动改从国内镜像站拉取,完成后 tag 回原名,容器引用与界面显示均不变:
 
-| 原 registry | 镜像站(按顺序尝试) |
+| 原 registry | 镜像站(按探测优先级排列) |
 |---|---|
 | `docker.io` | `docker.m.daocloud.io` → `docker.1ms.run` → `docker.xuanyuan.me`* → `docker.linkos.org`* |
 | `ghcr.io` | `ghcr.m.daocloud.io` → `ghcr.1ms.run` → `ghcr.nju.edu.cn` → `ghcr.linkos.org`* |
@@ -47,11 +47,12 @@ volumes:
 
 标 `*` 的为境外节点,无代理时通常较慢,仅作兜底。
 
-- 拉取前逐个探测镜像站:取 manifest 并读取最大层的前 1MB,12 秒内读完才采用(小层读取整层),单站探测总计最多 20 秒,否则跳过换下一个。可以识别白名单拒绝(如 daocloud 对个人镜像返回 403)、冷门镜像长时间回源(如 NJU)和限速过低的站点
+- 拉取前按优先级探测镜像站:首站 500ms 内尚未完成时增加一路探测,最多并发两路,最先完成测速的站点胜出。取 manifest 并读取最大层的前 1MB,12 秒内读完才采用(小层读取整层),单站探测总计最多 20 秒。可以识别白名单拒绝(如 daocloud 对个人镜像返回 403)、冷门镜像长时间回源(如 NJU)和限速过低的站点,减少等待慢站的时间
 - 同一镜像的并发探测合并为一次,成功结果缓存 60 秒、失败结果缓存 15 秒,最多保留 256 条;实际拉取失败立即使成功缓存失效。缓存只用于选择镜像站,不缓存镜像内容或更新检查的 digest
-- 全部镜像站不可用或拉取失败时回退到原地址,最差等同未开启
+- 探测通过但实际拉取或 tag 失败时继续尝试其余镜像站,同一次拉取不重复尝试失败站点;全部镜像站失败后才回退到原地址
 - 已在 Dockhand 中配置凭据的 registry(私有镜像)不走镜像站
 - 拉取后本地会多出一个镜像站名称的 tag(如 `ghcr.nju.edu.cn/xxx`),指向同一镜像、不占额外空间;请勿删除,更新检测依赖它记录的 digest
+- 自动回收旧镜像:拉取前记录原镜像与已配置镜像站标签对应的镜像 ID,每 30 秒检查一次。原标签已切换到新版、旧镜像不再被任何容器(含停止的容器)引用,且没有其他用途的标签时,按 ID 非强制删除旧镜像。普通拉取、容器更新和 Stack 预拉取均适用,不会执行全局 prune;Docker 的多标签/引用冲突会保留待重试。队列保存在数据目录的 `zh-image-cleanup.json`,重启后在下次访问对应环境或执行 Stack 操作时恢复。只回收本补丁记录到的旧版本,不会扫描删除历史遗留镜像;当前版本的镜像站标签继续保留供更新检测使用
 - Stack 部署:执行 `docker compose up/pull` 前按相同参数解析镜像列表并预拉取,拉取语义与 compose 一致(`up` 只拉本地缺失的,`--pull always` 全部拉,`--pull never` 跳过);预拉取失败则由 compose 照常从原地址拉取。日志前缀 `[ZhMirror]`
 - 更新检查/自动更新:查询 Docker Hub 镜像的远端 digest 时同样按上表顺序改走镜像站,不再依赖 `auth.docker.io`(国内常连不上,连不上时上游会把公开镜像误报为 "Registry denied access (401) - private image or missing credentials")。全部镜像站失败时回退到 Docker Hub;已在 Dockhand 配置 Docker Hub 凭据时仍直连 Docker Hub,凭据不会发给镜像站
 - 仅本机/直连环境生效;Hawser 远程 agent 环境的拉取在 agent 端进行,不受影响

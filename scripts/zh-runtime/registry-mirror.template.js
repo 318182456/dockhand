@@ -5,11 +5,11 @@
  * 并把原 dockerFetch 改名为 <名称>__zhOrig,由 __zhMirrorFetch 包一层。
  *
  * 流程:POST /images/create 且 registry 命中映射表 →
- *   0) 按顺序探测该 registry 的各镜像站(取 manifest + 最大层前 1MB),选第一个在限时内出数据的;
+ *   0) 按优先级探测镜像站(取 manifest + 最大层前 1MB),最多并发两路,选最先完成测速的;
  *      回源缓存型镜像站(如 NJU)对冷门镜像会一直不吐数据,探测可在十几秒内识别并跳过
  *   1) 从镜像站拉取,进度原样转发给调用方
  *   2) 成功后 tag 回原名(容器/compose 引用、界面显示均不变)
- *   3) 镜像站任一环节失败 → 丢弃其错误行,透明回退到原地址重拉
+ *   3) 镜像站任一环节失败 → 丢弃其错误行,换站重试,全部失败才回源
  * 镜像站的 tag 刻意保留:删掉它会连带删除 RepoDigests,上游的更新检测依赖该 digest。
  * 已配置凭据(带 X-Registry-Auth)的私有镜像不走镜像站。
  *
@@ -233,22 +233,221 @@ async function __zhMirrorProbeUncached(mirror, repoPath, tag) {
 	}
 }
 
-// 按顺序探测,返回第一个可用的镜像站;skip 为已试过的镜像站
+// 优先探测排在前面的站点;500ms 未完成时增加一路探测,最多并发 2 路。
+// 首个完成完整层测速的站点胜出;已开始的探测仍会收尾并更新共享缓存。
+// skip 为本次拉取已经实际失败的站点,防止回退时重复尝试。
 async function __zhMirrorPick(mirrors, repoPath, tag, label, logPrefix, skip) {
-	for (var i = 0; i < mirrors.length; i++) {
-		if (skip && skip.indexOf(mirrors[i]) !== -1) continue;
-		var p = await __zhMirrorProbe(mirrors[i], repoPath, tag);
-		if (p.ok) {
-			console.log(logPrefix + ' 探测 ' + mirrors[i] + ' 可用(' + p.ms + 'ms): ' + label);
-			return mirrors[i];
-		}
-		console.warn(logPrefix + ' 探测 ' + mirrors[i] + ' 不可用,跳过: ' + p.reason);
-	}
-	return null;
+	var candidates = mirrors.filter(function (m) { return !skip || skip.indexOf(m) === -1; });
+	return new Promise(function (resolve) {
+		var next = 0, active = 0, settled = false, timer;
+		var finish = function (mirror) { if (!settled) { settled = true; clearTimeout(timer); resolve(mirror); } };
+		var launch = function () {
+			if (settled || active >= 2) return;
+			if (next >= candidates.length) { if (!active) finish(null); return; }
+			var mirror = candidates[next++];
+			active++;
+			Promise.resolve().then(function () { return __zhMirrorProbe(mirror, repoPath, tag); }).catch(function (e) {
+				return { ok: false, reason: e.message };
+			}).then(function (p) {
+				active--;
+				if (p.ok) {
+					if (!settled) console.log(logPrefix + ' 探测 ' + mirror + ' 可用(' + p.ms + 'ms): ' + label);
+					finish(mirror);
+				} else {
+					console.warn(logPrefix + ' 探测 ' + mirror + ' 不可用,跳过: ' + p.reason);
+					launch();
+				}
+			});
+		};
+		launch();
+		if (!settled) timer = setTimeout(launch, 500);
+	});
 }
 
-async function __zhMirrorFetch(orig, path, opts, envId) {
+// 只跟踪拉取前已存在的镜像 ID,不对 daemon 执行全局 prune。
+// 跨 chunk 共享队列;持久化后,更新中途重启也能在下次访问该环境时继续回收。
+var __zhCleanupState = globalThis.__zhCleanupState || (globalThis.__zhCleanupState = {
+	scopes: Object.create(null), adapters: new Map(), ready: null, writes: Promise.resolve(), busy: false, timer: null, active: 0
+});
+
+async function __zhCleanupAttach(adapter) {
+	var s = __zhCleanupState;
+	s.adapters.set(adapter.key, adapter);
+	if (!s.ready) s.ready = (async function () {
+		try {
+			s.fs = await import('node:fs/promises');
+			var path = await import('node:path');
+			s.file = path.join(process.env.DATA_DIR || path.join(process.cwd(), 'data'), 'zh-image-cleanup.json');
+			try {
+				var saved = JSON.parse(await s.fs.readFile(s.file, 'utf8'));
+				if (saved.version === 1 && saved.scopes && typeof saved.scopes === 'object') {
+					for (var key of Object.keys(saved.scopes)) {
+						if (Array.isArray(saved.scopes[key])) s.scopes[key] = saved.scopes[key].filter(function (x) {
+							return x && /^sha256:[a-f0-9]{64}$/.test(x.id) && typeof x.original === 'string' &&
+								Array.isArray(x.aliases) && x.aliases.every(function (a) { return typeof a === 'string'; });
+						});
+					}
+				}
+			} catch (e) { if (e.code !== 'ENOENT') console.warn('[ZhMirror] 读取旧镜像清理队列失败: ' + e.message); }
+		} catch (e) { console.warn('[ZhMirror] 初始化旧镜像清理队列失败: ' + e.message); }
+	})();
+	await s.ready;
+	if (!s.scopes[adapter.key]) s.scopes[adapter.key] = [];
+	if (!s.timer) {
+		s.timer = setInterval(function () { __zhCleanupSweep().catch(function (e) {
+			console.warn('[ZhMirror] 旧镜像清理失败,稍后重试: ' + e.message);
+		}); }, 30000);
+		if (s.timer.unref) s.timer.unref();
+	}
+}
+
+async function __zhCleanupSave() {
+	var s = __zhCleanupState;
+	if (!s.fs || !s.file) return;
+	var json = JSON.stringify({ version: 1, scopes: s.scopes });
+	s.writes = s.writes.catch(function () {}).then(async function () {
+		await s.fs.writeFile(s.file + '.tmp', json, { mode: 0o600 });
+		await s.fs.rename(s.file + '.tmp', s.file);
+	}).catch(function (e) { console.warn('[ZhMirror] 保存旧镜像清理队列失败: ' + e.message); });
+	await s.writes;
+}
+
+async function __zhCleanupCapture(adapter, from, tag, mirrors) {
+	try {
+		await __zhCleanupAttach(adapter);
+		var parsed = __zhMirrorParseRef(from);
+		var original = from + ':' + tag;
+		var aliases = mirrors.map(function (m) { return m + '/' + parsed.path + ':' + tag; });
+		var queue = __zhCleanupState.scopes[adapter.key];
+		for (var name of [original].concat(aliases)) {
+			var image = await adapter.inspect(name);
+			if (!image || !/^sha256:[a-f0-9]{64}$/.test(image.Id)) continue;
+			var entry = queue.find(function (x) { return x.id === image.Id && x.original === original; });
+			if (!entry) { entry = { id: image.Id, original: original, aliases: [] }; queue.push(entry); }
+			for (var alias of aliases) if (!entry.aliases.includes(alias)) entry.aliases.push(alias);
+		}
+		await __zhCleanupSave();
+	} catch (e) { console.warn('[ZhMirror] 记录旧镜像失败,拉取照常继续: ' + e.message); }
+}
+
+async function __zhCleanupSweep() {
+	var s = __zhCleanupState;
+	if (s.busy || s.active) return;
+	s.busy = true;
+	var changed = false;
+	try {
+		for (var pair of s.adapters) {
+			var adapter = pair[1];
+			var queue = s.scopes[pair[0]] || [];
+			// 快照遍历,不覆盖并发拉取刚加入的记录。
+			for (var entry of queue.slice()) {
+				try {
+					var image = await adapter.inspect(entry.id);
+					var done = !image;
+					if (image) {
+						var current = await adapter.inspect(entry.original);
+						// 新版必须已存在;仍为当前版本或更新失败时不处理。
+						if (!current || current.Id === entry.id) continue;
+						var tags = (image.RepoTags || []).filter(function (t) { return t !== '<none>:<none>'; });
+						if (tags.some(function (t) { return !entry.aliases.includes(t); })) continue;
+						// 包含已停止的容器;Docker 最后的非强制删除还会再次检查引用。
+						if (await adapter.inUse(entry.id)) continue;
+						if (s.active) continue;
+						// 只按 ID 非强制删除;并发拉取重新打上标签或创建容器时由 Docker 拒绝删除。
+						// 多标签镜像同样交给 Docker 的冲突保护,不逐个删标签以免和并发 tag 竞争。
+						done = await adapter.remove(entry.id);
+						if (done) console.log('[ZhMirror] 已清理被替换的旧镜像: ' + entry.original + ' (' + entry.id + ')');
+					}
+					if (done) { var index = queue.indexOf(entry); if (index !== -1) queue.splice(index, 1); changed = true; }
+				} catch (e) { /* 环境离线/引用冲突等保留记录,下轮重试 */ }
+			}
+		}
+		if (changed) await __zhCleanupSave();
+	} finally { s.busy = false; }
+}
+
+function __zhCleanupApi(orig, envId) {
+	return {
+		key: 'api:' + (envId == null ? 'default' : String(envId)),
+		inspect: async function (ref) {
+			var r = await orig('/images/' + encodeURIComponent(ref) + '/json', {}, envId);
+			if (r.status === 404) { await r.text(); return null; }
+			if (!r.ok) { await r.text(); throw new Error('inspect HTTP ' + r.status); }
+			return r.json();
+		},
+		inUse: async function (id) {
+			var r = await orig('/containers/json?all=true&filters=' + encodeURIComponent(JSON.stringify({ ancestor: [id] })), {}, envId);
+			if (!r.ok) { await r.text(); throw new Error('containers HTTP ' + r.status); }
+			return (await r.json()).length > 0;
+		},
+		remove: async function (ref) {
+			var r = await orig('/images/' + encodeURIComponent(ref) + '?force=false&noprune=true', { method: 'DELETE' }, envId);
+			await r.text();
+			return r.ok || r.status === 404;
+		}
+	};
+}
+
+async function __zhCleanupCli(run, args, cwd, env) {
+	// 保存队列中仅记录作用域哈希,不保存 CLI 环境变量或凭据。
+	var crypto = await import('node:crypto');
+	var identity = [args[0], cwd, env.DOCKER_HOST || '', env.DOCKER_CONTEXT || '', env.DOCKER_CONFIG || '',
+		env.DOCKER_TLS_VERIFY || '', env.DOCKER_CERT_PATH || ''];
+	return {
+		key: 'cli:' + crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex'),
+		inspect: async function (ref) {
+			var r = await run(['image', 'inspect', ref], null, 30000);
+			if (r.code !== 0) {
+				if (/No such (image|object)/i.test(r.out)) return null;
+				throw new Error(r.out);
+			}
+			return JSON.parse(r.out)[0];
+		},
+		inUse: async function (id) {
+			var r = await run(['ps', '-a', '--filter', 'ancestor=' + id, '--format', '{{.ID}}'], null, 30000);
+			if (r.code !== 0) throw new Error(r.out);
+			return !!r.out.trim();
+		},
+		remove: async function (ref) {
+			var r = await run(['image', 'rm', '--no-prune', ref], null, 30000);
+			return r.code === 0 || /No such image/i.test(r.out);
+		}
+	};
+}
+
+// 清理与实际拉取互斥到响应流结束,包括调用方取消或网络异常的路径。
+async function __zhMirrorFetch(orig, path, opts, envId, tried) {
+	var pulling = opts && (opts.method || 'GET').toUpperCase() === 'POST' &&
+		typeof path === 'string' && path.indexOf('/images/create?') === 0;
+	if (!pulling) return __zhMirrorFetchImpl(orig, path, opts, envId, tried);
+	var s = __zhCleanupState;
+	s.active++;
+	var finished = false;
+	var finish = function () { if (!finished) { finished = true; s.active--; } };
+	try {
+		var res = await __zhMirrorFetchImpl(orig, path, opts, envId, tried);
+		if (!res.body) { finish(); return res; }
+		var reader = res.body.getReader();
+		var body = new ReadableStream({
+			pull: async function (ctrl) {
+				try {
+					var r = await reader.read();
+					if (r.done) { finish(); reader.releaseLock(); ctrl.close(); }
+					else ctrl.enqueue(r.value);
+				} catch (e) { finish(); reader.releaseLock(); ctrl.error(e); }
+			},
+			cancel: async function (reason) {
+				try { await reader.cancel(reason); } finally { finish(); reader.releaseLock(); }
+			}
+		});
+		return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+	} catch (e) { finish(); throw e; }
+}
+
+async function __zhMirrorFetchImpl(orig, path, opts, envId, tried) {
 	opts = opts || {};
+	var cleanup = __zhCleanupApi(orig, envId);
+	await __zhCleanupAttach(cleanup);
 	var method = (opts.method || 'GET').toUpperCase();
 	var PREFIX = '/images/create?';
 	if (method !== 'POST' || typeof path !== 'string' || path.indexOf(PREFIX) !== 0) {
@@ -269,13 +468,13 @@ async function __zhMirrorFetch(orig, path, opts, envId) {
 			tag = 'latest';
 		}
 	}
-	if (__zhMirrorHasAuth(opts.headers)) return orig(path, opts, envId);
-
 	var ref = __zhMirrorParseRef(from);
 	var mirrors = __zhMirrorTable()[ref.registry];
+	if (!tried) await __zhCleanupCapture(cleanup, from, tag, mirrors || []);
+	if (__zhMirrorHasAuth(opts.headers)) return orig(path, opts, envId);
 	if (!mirrors) return orig(path, opts, envId);
 	var label = from + ':' + tag;
-	var mirror = await __zhMirrorPick(mirrors, ref.path, tag, label, '[ZhMirror]');
+	var mirror = await __zhMirrorPick(mirrors, ref.path, tag, label, '[ZhMirror]', tried);
 	if (!mirror) {
 		console.warn('[ZhMirror] 无可用镜像站,直接从原地址拉取: ' + label);
 		return orig(path, opts, envId);
@@ -299,14 +498,18 @@ async function __zhMirrorFetch(orig, path, opts, envId) {
 		res = null;
 	}
 	if (!res) {
+		await __zhCleanupCapture(cleanup, from, tag, mirrors);
 		__zhMirrorProbeFailed(mirror, ref.path, tag, firstError);
-		console.warn('[ZhMirror] ' + mirrored + ':' + tag + ' 拉取失败,回退原地址 ' + label + ': ' + firstError);
-		return orig(path, opts, envId);
+		console.warn('[ZhMirror] ' + mirrored + ':' + tag + ' 拉取失败,尝试其他镜像站 ' + label + ': ' + firstError);
+		return __zhMirrorFetch(orig, path, opts, envId, (tried || []).concat(mirror));
 	}
 
 	var enc = new TextEncoder();
 	var body = new ReadableStream({
 		start: async function (ctrl) {
+			// start 的异步生产可能在消费者取消后才结束,独立保护该阶段。
+			__zhCleanupState.active++;
+			try {
 			var failed = null;
 			var emit = function (obj) { ctrl.enqueue(enc.encode(JSON.stringify(obj) + '\n')); };
 			// 镜像站的错误行不转发(调用方会把它当成最终失败),记下后走回退
@@ -353,11 +556,12 @@ async function __zhMirrorFetch(orig, path, opts, envId) {
 			}
 
 			if (failed) {
+				await __zhCleanupCapture(cleanup, from, tag, mirrors);
 				__zhMirrorProbeFailed(mirror, ref.path, tag, failed);
-				console.warn('[ZhMirror] ' + mirrored + ':' + tag + ' 拉取失败,回退原地址 ' + label + ': ' + failed);
-				emit({ status: '[镜像加速] 镜像站失败,回退原地址: ' + failed });
+				console.warn('[ZhMirror] ' + mirrored + ':' + tag + ' 拉取失败,尝试其他镜像站 ' + label + ': ' + failed);
+				emit({ status: '[镜像加速] 镜像站失败,尝试其他镜像站,全部失败后回源: ' + failed });
 				try {
-					var fr = await orig(path, opts, envId);
+					var fr = await __zhMirrorFetch(orig, path, opts, envId, (tried || []).concat(mirror));
 					if (!fr.ok || !fr.body) {
 						emit({ error: 'Failed to pull image: ' + (await fr.text().catch(function () { return 'HTTP ' + fr.status; })) });
 					} else {
@@ -375,6 +579,7 @@ async function __zhMirrorFetch(orig, path, opts, envId) {
 				console.log('[ZhMirror] ' + label + ' 已通过 ' + mirror + ' 拉取');
 			}
 			ctrl.close();
+			} finally { __zhCleanupState.active--; }
 		}
 	});
 	return new Response(body, { status: 200, statusText: 'OK', headers: { 'Content-Type': 'application/json' } });
@@ -448,6 +653,10 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 			});
 		};
 
+		var cleanup = await __zhCleanupCli(run, args, cwd, env);
+		await __zhCleanupAttach(cleanup);
+		__zhCleanupState.active++;
+		var cleanupActive = true;
 		var base = args.slice(1, baseLen); // 去掉开头的 docker
 		var cfg = await run(base.concat(['config', '--images'], serviceName ? [serviceName] : []), stdinContent, 60000);
 		if (cfg.code !== 0) {
@@ -475,6 +684,7 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 			}
 
 			// 逐个镜像站:探测通过才拉,拉取失败换下一个;全部失败交还 compose
+			await __zhCleanupCapture(cleanup, ref.from, ref.tag, mirrors);
 			var tried = [];
 			var done = false;
 			while (!done) {
@@ -493,12 +703,14 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 					}
 				});
 				if (pr.code !== 0) {
+					await __zhCleanupCapture(cleanup, ref.from, ref.tag, mirrors);
 					__zhMirrorProbeFailed(mirror, parsed.path, ref.tag, 'docker pull 失败');
 					console.warn(tag0 + ' ' + mirror + ' 拉取失败: ' + pr.out.trim().split('\n').pop());
 					continue;
 				}
 				var tr = await run(['tag', mirrorRef, origRef], null, 30000);
 				if (tr.code !== 0) {
+					await __zhCleanupCapture(cleanup, ref.from, ref.tag, mirrors);
 					console.warn(tag0 + ' tag 回原名失败: ' + tr.out.trim());
 					continue;
 				}
@@ -509,6 +721,8 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 		}
 	} catch (e) {
 		console.warn(tag0 + ' 预拉取异常,跳过: ' + ((e && e.message) || String(e)));
+	} finally {
+		if (cleanupActive) __zhCleanupState.active--;
 	}
 }
 
