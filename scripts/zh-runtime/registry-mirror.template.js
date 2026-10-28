@@ -603,9 +603,20 @@ function __zhMirrorSplitTag(image) {
  *   op/pullPolicy/serviceName — 对应 buildComposeOperationArgs 的入参
  *   args/baseLen — 完整 compose 命令行与其中操作参数之前的长度(即 "docker compose -p .. -f .." 部分)
  *   stdinContent — compose 内容经 stdin 传入(-f -)时的内容,否则为 null
+ *   onLine — 上游 makeLineForwarder 脱敏后的逐行回调,进入部署输出和运行记录日志
  */
-async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cwd, env, stdinContent, logPrefix) {
+async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cwd, env, stdinContent, logPrefix, onLine) {
 	var tag0 = (logPrefix || '[Stack]') + ' [ZhMirror]';
+	// onLine 已由 inject.mjs 接上上游的脱敏器,同一份输出进入部署浮窗和执行日志。
+	var forward = function (message) {
+		if (typeof onLine !== 'function') return;
+		try { onLine('[镜像加速] ' + message); }
+		catch (e) { console.warn(tag0 + ' 发送部署进度失败: ' + e.message); }
+	};
+	var report = function (message, warning) {
+		forward(message);
+		(warning ? console.warn : console.log)(tag0 + ' ' + message);
+	};
 	try {
 		if (op !== 'up' && op !== 'pull') return;
 		if (op === 'up' && pullPolicy === 'never') return;
@@ -614,13 +625,24 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 		if (!Object.keys(table).length) return;
 		var pullAll = op === 'pull' || pullPolicy === 'always';
 		var cp = await import('node:child_process');
+		var StringDecoder = (await import('node:string_decoder')).StringDecoder;
+		report('正在解析部署所需镜像');
 
 		var run = function (argv, input, timeoutMs, onLine) {
 			return new Promise(function (resolve) {
 				var out = '';
-				var pending = '';
+				var streams = [0, 1].map(function () { return { decoder: new StringDecoder('utf8'), pending: '' }; });
 				var done = false;
-				var finish = function (code) { if (!done) { done = true; clearTimeout(timer); resolve({ code: code, out: out }); } };
+				var finish = function (code) {
+					if (done) return;
+					done = true;
+					clearTimeout(timer);
+					for (var stream of streams) {
+						stream.pending += stream.decoder.end();
+						if (onLine && stream.pending.trim()) onLine(stream.pending);
+					}
+					resolve({ code: code, out: out });
+				};
 				var proc;
 				try {
 					proc = cp.spawn(args[0], argv, { cwd: cwd, env: env, stdio: [input != null ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
@@ -634,18 +656,19 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 					try { proc.kill('SIGKILL'); } catch (e) { /* 已退出 */ }
 					finish(-1);
 				}, timeoutMs);
-				var onData = function (d) {
-					var s = d.toString();
+				var onData = function (stream, d) {
+					if (done) return;
+					var s = stream.decoder.write(d);
 					out += s;
 					if (out.length > 65536) out = out.slice(-32768);
 					if (!onLine) return;
-					pending += s;
-					var lines = pending.split(/\r?\n/);
-					pending = lines.pop();
+					stream.pending += s;
+					var lines = stream.pending.split(/[\r\n]+/);
+					stream.pending = lines.pop();
 					for (var i = 0; i < lines.length; i++) if (lines[i].trim()) onLine(lines[i]);
 				};
-				proc.stdout.on('data', onData);
-				proc.stderr.on('data', onData);
+				proc.stdout.on('data', function (d) { onData(streams[0], d); });
+				proc.stderr.on('data', function (d) { onData(streams[1], d); });
 				proc.on('error', function (e) { out += (e && e.message) || String(e); finish(-1); });
 				proc.on('close', function (code) { finish(code); });
 				if (input != null) {
@@ -662,7 +685,7 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 		var base = args.slice(1, baseLen); // 去掉开头的 docker
 		var cfg = await run(base.concat(['config', '--images'], serviceName ? [serviceName] : []), stdinContent, 60000);
 		if (cfg.code !== 0) {
-			console.warn(tag0 + ' 解析镜像列表失败,跳过预拉取: ' + cfg.out.trim().slice(0, 500));
+			report('解析镜像列表失败,交给 Compose 处理: ' + cfg.out.trim().slice(0, 500), true);
 			return;
 		}
 		var seen = Object.create(null);
@@ -682,7 +705,7 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 
 			if (!pullAll) {
 				var ins = await run(['image', 'inspect', '--format', '{{.Id}}', origRef], null, 30000);
-				if (ins.code === 0) continue; // 本地已有,compose 也不会拉
+				if (ins.code === 0) { report('本地已有镜像,跳过拉取: ' + origRef); continue; }
 			}
 
 			// 逐个镜像站:探测通过才拉,拉取失败换下一个;全部失败交还 compose
@@ -690,14 +713,16 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 			var tried = [];
 			var done = false;
 			while (!done) {
+				report('正在选择可用镜像站: ' + origRef);
 				var mirror = await __zhMirrorPick(mirrors, parsed.path, ref.tag, origRef, tag0, tried);
 				if (!mirror) break;
 				tried.push(mirror);
 				var mirrorRef = mirror + '/' + parsed.path + ':' + ref.tag;
-				console.log(tag0 + ' 预拉取 ' + origRef + ' ← ' + mirrorRef);
+				report('开始拉取 ' + origRef + ' ← ' + mirrorRef);
 				var last = 0;
 				var pr = await run(['pull', mirrorRef], null, 30 * 60 * 1000, function (line) {
-					// docker pull 非 TTY 下逐层输出状态,限流避免刷屏
+					// 页面逐行接收层状态;仅后台 console 限流,避免丢失页面上的完成/错误行。
+					forward(line);
 					var now = Date.now();
 					if (now - last > 3000 || /^(Status|Digest|Error|error)/.test(line)) {
 						last = now;
@@ -707,22 +732,23 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 				if (pr.code !== 0) {
 					await __zhCleanupCapture(cleanup, ref.from, ref.tag, mirrors);
 					__zhMirrorProbeFailed(mirror, parsed.path, ref.tag, 'docker pull 失败');
-					console.warn(tag0 + ' ' + mirror + ' 拉取失败: ' + pr.out.trim().split('\n').pop());
+					report(mirror + ' 拉取失败,尝试其他镜像站: ' + pr.out.trim().split(/[\r\n]+/).pop(), true);
 					continue;
 				}
 				var tr = await run(['tag', mirrorRef, origRef], null, 30000);
 				if (tr.code !== 0) {
 					await __zhCleanupCapture(cleanup, ref.from, ref.tag, mirrors);
-					console.warn(tag0 + ' tag 回原名失败: ' + tr.out.trim());
+					report('tag 回原名失败,尝试其他镜像站: ' + tr.out.trim(), true);
 					continue;
 				}
-				console.log(tag0 + ' ' + origRef + ' 已通过 ' + mirror + ' 拉取');
+				report('镜像拉取完成: ' + origRef + ' (' + mirror + ')');
 				done = true;
 			}
-			if (!done) console.warn(tag0 + ' 无可用镜像站,交给 compose 从原地址拉取: ' + origRef);
+			if (!done) report('无可用镜像站,交给 Compose 从原地址拉取: ' + origRef, true);
 		}
+		report('镜像预拉取阶段结束,继续执行 Compose');
 	} catch (e) {
-		console.warn(tag0 + ' 预拉取异常,跳过: ' + ((e && e.message) || String(e)));
+		report('预拉取异常,交给 Compose 处理: ' + ((e && e.message) || String(e)), true);
 	} finally {
 		if (cleanupActive) __zhCleanupState.active--;
 	}

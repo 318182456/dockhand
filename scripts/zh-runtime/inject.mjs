@@ -72,6 +72,9 @@ if (mirrorPatched !== 1) {
 const PUSH_RE = /([\w$]+)\.push\(\.\.\.[\w$]+\(([\w$]+),\{forceRecreate:[\w$]+,removeVolumes:[\w$]+,build:[\w$]+,noBuildCache:[\w$]+,pullPolicy:([\w$]+),serviceName:([\w$]+)\}\)\)/g;
 const SPAWN_RE = /try\{console\.log\(`\$\{([\w$]+)\} Spawning docker compose process from \$\{([\w$]+)\}: \$\{([\w$]+)\.join\(" "\)\}`\);const ([\w$]+)=[\w$]+\(\3\[0\],\3\.slice\(1\),\{cwd:\2,env:([\w$]+),stdio:\[([\w$]+)\?"pipe":"inherit","pipe","pipe"\]\}\);\6&&\4\.stdin&&\(\4\.stdin\.write\(([\w$]+)\)/g;
 const PREPULL_MARK = '__zhComposePrepull(';
+// collectProcess(proc, onLine ? makeLineForwarder(onLine, secrets) : undefined)
+// 使用上游同一脱敏器和 envVars/secretVars,不能把携带 HOME/PATH 的 spawnEnv 当成敏感值表。
+const FORWARD_RE = /(?:const|let|var) ([\w$]+)=(\[\.\.\.Object\.values\([\w$]+\?\?\{\}\),\.\.\.Object\.values\([\w$]+\?\?\{\}\)\]\.filter\(([\w$]+)=>typeof \3={2,3}"string"\)),\{exitCode:[\w$]+,stdout:[\w$]+,stderr:[\w$]+\}=await [\w$]+\(([\w$]+),([\w$]+)\?([\w$]+)\(\5,\1\):(?:void 0|undefined)\)/g;
 
 let prepullPatched = 0;
 for (const file of walk(path.join(buildDir, 'server'))) {
@@ -87,13 +90,21 @@ for (const file of walk(path.join(buildDir, 'server'))) {
 		process.exit(1);
 	}
 	const [, arr, op, pullPolicy, serviceName] = pushHits[0];
-	const [, logPrefix, cwd, argsVar, , envVar, stdinFlag, stdinContent] = spawnHits[0];
+	const [, logPrefix, cwd, argsVar, proc, envVar, stdinFlag, stdinContent] = spawnHits[0];
 	if (arr !== argsVar || pushHits[0].index > spawnHits[0].index) {
 		console.error('错误: compose 指纹不一致(push 数组 ' + arr + ' / spawn 参数 ' + argsVar + '),拒绝注入');
 		process.exit(1);
 	}
+	const forwards = [...s.slice(spawnHits[0].index).matchAll(FORWARD_RE)].filter((hit) => hit[4] === proc);
+	if (forwards.length !== 1) {
+		console.error('错误: ' + path.relative(buildDir, file) + ' 中 compose 脱敏进度回调指纹命中 ' + forwards.length +
+			' 次,必须恰好 1 次,拒绝注入不可见或未脱敏的预拉取');
+		process.exit(1);
+	}
+	const [, , secretsExpression, , , onLine, forwarder] = forwards[0];
+	const progress = onLine + '?' + forwarder + '(' + onLine + ',' + secretsExpression + '):void 0';
 	const call = 'await __zhComposePrepull(' + [op, pullPolicy, serviceName, arr, arr + '.__zhBase', cwd, envVar,
-		stdinFlag + '?' + stdinContent + ':null', logPrefix].join(',') + ');';
+		stdinFlag + '?' + stdinContent + ':null', logPrefix, progress].join(',') + ');';
 	// 先改后面的 spawn 处,再改前面的 push 处,避免下标偏移
 	s = s.slice(0, spawnHits[0].index) + call + s.slice(spawnHits[0].index);
 	s = s.slice(0, pushHits[0].index) + arr + '.__zhBase=' + arr + '.length,' + s.slice(pushHits[0].index);
