@@ -165,21 +165,26 @@ function logFunctionBody(source, start) {
 	return '';
 }
 let clientLogPatched = 0;
+const clientLogRoles = new Set();
 for (const file of walk(buildDir)) {
 	if (!file.endsWith('.js')) continue;
 	let s = fs.readFileSync(file, 'utf8');
-	if (!s.includes('@@git@@ ') || !s.includes('log-line')) continue;
+	if (!s.includes('@@git@@ ')) continue;
 	const isClient = path.relative(buildDir, file).split(path.sep)[0] === 'client';
-	if (s.includes('function __zhCompactPullLines(')) { if (isClient) clientLogPatched++; continue; }
 	const gitMarker = /(?:(?:const|let|var) |,)([\w$]+)=["']@@git@@ ["']/.exec(s);
 	const hits = [...s.matchAll(LOG_LINES_RE)].filter((hit) => {
 		const body = logFunctionBody(s, hit.index);
 		return gitMarker && body.includes('.startsWith(' + gitMarker[1] + ')') && body.includes('.slice(' + gitMarker[1] + '.length)');
 	});
-	if (hits.length !== 2) {
-		console.error('错误: ' + path.relative(buildDir, file) + ' 日志格式化指纹命中 ' + hits.length + ' 次,预期 2 次');
-		process.exit(1);
+	// SSR 会裁剪复制/下载按钮使用的纯文本格式化器,也可能把两个函数拆到不同 chunk。
+	// 按保留的函数分别包装,在全部客户端 chunk 扫描结束后检查功能覆盖。
+	if (!hits.length) continue;
+	if (isClient) {
+		for (const hit of hits) {
+			clientLogRoles.add(logFunctionBody(s, hit.index).includes('log-line') ? 'html' : 'text');
+		}
 	}
+	if (s.includes('function __zhCompactPullLines(')) { if (isClient) clientLogPatched++; continue; }
 	for (const hit of hits.slice().reverse()) {
 		const name = hit[1];
 		if (s.includes(name + '__zhOrig')) throw new Error('日志包装标识符冲突: ' + name);
@@ -191,8 +196,8 @@ for (const file of walk(buildDir)) {
 	if (isClient) clientLogPatched++;
 	console.log('已注入镜像层原地刷新: ' + path.relative(buildDir, file));
 }
-if (!clientLogPatched) {
-	console.error('错误: 未找到客户端日志行格式化器,拒绝构建无法原地刷新进度的镜像');
+if (!clientLogPatched || !clientLogRoles.has('html') || !clientLogRoles.has('text')) {
+	console.error('错误: 客户端日志格式化器覆盖不完整(显示/复制下载),拒绝构建无法完整刷新进度的镜像');
 	process.exit(1);
 }
 
