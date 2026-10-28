@@ -1,6 +1,6 @@
 # Dockhand 国内镜像加速版
 
-基于 [Dockhand](https://github.com/Finsys/dockhand)(现代化 Docker 管理界面)的官方镜像,追加国内镜像加速功能。
+基于 [Dockhand](https://github.com/Finsys/dockhand)(现代化 Docker 管理界面)的官方镜像,追加国内镜像加速及下载进度显示。
 
 上游自 [v1.0.54](https://github.com/Finsys/dockhand/releases/tag/v1.0.54) 起已原生支持简体中文。本仓库已移除中文翻译注入层,界面语言由上游处理。
 
@@ -9,7 +9,7 @@
 本仓库**不包含也不修改上游源码**。CI 每 6 小时检测一次上游 release,发现新版本后:
 
 1. 拉取上游官方镜像 `fnsys/dockhand:<tag>`
-2. 构建期([Dockerfile.zh](Dockerfile.zh))通过 [scripts/zh-runtime/inject.mjs](scripts/zh-runtime/inject.mjs) 注入服务端镜像加速补丁,支持镜像拉取、Stack 预拉取及更新检查
+2. 构建期([Dockerfile.zh](Dockerfile.zh))通过 [scripts/zh-runtime/inject.mjs](scripts/zh-runtime/inject.mjs) 注入镜像加速及日志行刷新补丁,支持镜像拉取、Stack 预拉取及更新检查,不重新编译前端
 3. 重新打包发布;已构建版本记录于 [VERSION](VERSION)
 
 ## 使用
@@ -53,7 +53,9 @@ volumes:
 - 已在 Dockhand 中配置凭据的 registry(私有镜像)不走镜像站
 - 拉取后本地会多出一个镜像站名称的 tag(如 `ghcr.nju.edu.cn/xxx`),指向同一镜像、不占额外空间;请勿删除,更新检测依赖它记录的 digest
 - 自动回收旧镜像:拉取前记录原镜像与已配置镜像站标签对应的镜像 ID,每 30 秒检查一次。原标签已切换到新版、旧镜像不再被任何容器(含停止的容器)引用,且没有其他用途的标签时,按 ID 非强制删除旧镜像。普通拉取、容器更新和 Stack 预拉取均适用,不会执行全局 prune;Docker 的多标签/引用冲突会保留待重试。队列保存在数据目录的 `zh-image-cleanup.json`,重启后在下次访问对应环境或执行 Stack 操作时恢复。只回收本补丁记录到的旧版本,不会扫描删除历史遗留镜像;当前版本的镜像站标签继续保留供更新检测使用
-- Stack 部署:执行 `docker compose up/pull` 前按相同参数解析镜像列表并预拉取,拉取语义与 compose 一致(`up` 只拉本地缺失的,`--pull always` 全部拉,`--pull never` 跳过);预拉取失败则由 compose 照常从原地址拉取。选站、镜像层状态、换站和完成信息通过上游脱敏回调写入部署输出浮窗和运行记录日志,后台日志前缀为 `[ZhMirror]`。显示的是实际阶段和 CLI 输出,不推算整体下载百分比。上游“部署历史”详情只在展开时读取日志,并非实时窗口;查看最新历史日志需刷新页面后重新展开
+- Stack 部署:执行 `docker compose up/pull` 前按相同参数解析镜像列表并预拉取(`up` 预拉取本地缺失镜像,`--pull always` 全部拉,`--pull never` 跳过)。选站、换站和完成事件通过上游脱敏回调进入部署输出及运行日志。通过同一 Docker CLI 的 daemon 连接读取 JSON 字节进度,按镜像层显示已下载大小、层百分比和采样速度(MiB/s);解压不计为下载速度,缺少字节信息时不推算。CLI 不支持该连接方式时明确提示并退回普通拉取。
+- 同一镜像层在日志视图中保留一行,原地刷新状态与速度;复制/下载日志也保留每层最新状态,普通事件和错误不折叠。客户端资产名称及压缩副本一并更新以避开旧缓存。上游“部署历史”详情仍只在展开时读取日志;实时进度看部署输出浮窗,最新历史日志需刷新页面后重新展开。
+- 避免重复回源:显式 `pull` 的镜像全部成功后直接返回成功;整栈 `up --pull always` 的镜像全部就绪后改用 `--pull never` 复用本地镜像。存在失败、未处理的引用或尚未覆盖的单服务依赖时保留原策略,由 Compose 继续处理。
 - 更新检查/自动更新:启动时从 `handler.js`/`index.js` 安装请求包装,覆盖独立 registry 模块,支持 `string`、`URL` 和 `Request`。查询上表 registry 的公共镜像元数据时逐站尝试镜像站;已配置且只对应一个源 registry 的镜像站域名(如 `ghcr.nju.edu.cn`)也支持换站。Docker Hub/GHCR 的匿名 challenge/token 无需直连源站;其他 registry 保留真实 challenge。全部镜像站失败后回源,如果源站也无法连接,仍如实报告错误。真实凭据和真实 token 不发给镜像站;关闭加速时请求原样放行。启动日志可查看 `[ZhMirror] 更新检查加速包装已安装`
 - 仅本机/直连环境生效;Hawser 远程 agent 环境的拉取在 agent 端进行,不受影响
 

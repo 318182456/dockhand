@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * 镜像加速注入器 —— 在 overlay 镜像构建期执行(见 Dockerfile.zh)。
- * 仅包装服务端镜像拉取与 Stack 预拉取,界面翻译由上游原生提供。
+ * 包装服务端镜像拉取、Stack 预拉取及日志进度行,界面翻译由上游原生提供。
  *
  * 用法: node inject.mjs <buildDir> <assetDir>
  *   buildDir — SvelteKit adapter-node 产物目录
@@ -9,6 +9,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { gzipSync, brotliCompressSync } from 'node:zlib';
 
 const [, , buildDir, assetDir] = process.argv;
 if (!buildDir || !assetDir) {
@@ -103,10 +105,11 @@ for (const file of walk(path.join(buildDir, 'server'))) {
 	}
 	const [, , secretsExpression, , , onLine, forwarder] = forwards[0];
 	const progress = onLine + '?' + forwarder + '(' + onLine + ',' + secretsExpression + '):void 0';
-	const call = 'await __zhComposePrepull(' + [op, pullPolicy, serviceName, arr, arr + '.__zhBase', cwd, envVar,
-		stdinFlag + '?' + stdinContent + ':null', logPrefix, progress].join(',') + ');';
+	const call = 'const __zhPrepullResult=await __zhComposePrepull(' + [op, pullPolicy, serviceName, arr, arr + '.__zhBase', cwd, envVar,
+		stdinFlag + '?' + stdinContent + ':null', logPrefix, progress].join(',') + ');' +
+		'if(__zhPrepullResult&&__zhPrepullResult.skipCompose)return{success:true,output:__zhPrepullResult.output,command:' + arr + '.join(" "),exitCode:0};';
 	// 先改后面的 spawn 处,再改前面的 push 处,避免下标偏移
-	s = s.slice(0, spawnHits[0].index) + call + s.slice(spawnHits[0].index);
+	s = s.slice(0, spawnHits[0].index) + 'try{' + call + s.slice(spawnHits[0].index + 'try{'.length);
 	s = s.slice(0, pushHits[0].index) + arr + '.__zhBase=' + arr + '.length,' + s.slice(pushHits[0].index);
 	// 若与 dockerFetch 同处一个 chunk,模板已追加过;重复的顶层函数声明在 ESM 中是语法错误
 	if (!s.includes('function __zhMirrorTable(')) s += '\n' + mirrorJs;
@@ -141,3 +144,99 @@ for (const entryName of ['handler.js', 'index.js']) {
 	}
 	console.log('已注入更新检查启动补丁: ' + entryName);
 }
+
+// ---- 4) 日志按镜像层原地刷新;同一处理也用于复制和下载日志 ----
+const progressJs = fs.readFileSync(path.join(assetDir, 'pull-progress.template.js'), 'utf8');
+const LOG_LINES_RE = /function ([\w$]+)\(([\w$]+)\)\{return \2\.split\((?:"\\n"|'\\n'|`(?:\\n|\r?\n)`)\)\.map\(/g;
+function logFunctionBody(source, start) {
+	let depth = 0, quote = '', escaped = false;
+	for (let i = source.indexOf('{', start); i < source.length; i++) {
+		const c = source[i];
+		if (quote) {
+			if (escaped) escaped = false;
+			else if (c === '\\') escaped = true;
+			else if (c === quote) quote = '';
+			continue;
+		}
+		if (c === '"' || c === "'" || c === '`') quote = c;
+		else if (c === '{') depth++;
+		else if (c === '}' && --depth === 0) return source.slice(start, i + 1);
+	}
+	return '';
+}
+let clientLogPatched = 0;
+for (const file of walk(buildDir)) {
+	if (!file.endsWith('.js')) continue;
+	let s = fs.readFileSync(file, 'utf8');
+	if (!s.includes('@@git@@ ') || !s.includes('log-line')) continue;
+	const isClient = path.relative(buildDir, file).split(path.sep)[0] === 'client';
+	if (s.includes('function __zhCompactPullLines(')) { if (isClient) clientLogPatched++; continue; }
+	const gitMarker = /(?:(?:const|let|var) |,)([\w$]+)=["']@@git@@ ["']/.exec(s);
+	const hits = [...s.matchAll(LOG_LINES_RE)].filter((hit) => {
+		const body = logFunctionBody(s, hit.index);
+		return gitMarker && body.includes('.startsWith(' + gitMarker[1] + ')') && body.includes('.slice(' + gitMarker[1] + '.length)');
+	});
+	if (hits.length !== 2) {
+		console.error('错误: ' + path.relative(buildDir, file) + ' 日志格式化指纹命中 ' + hits.length + ' 次,预期 2 次');
+		process.exit(1);
+	}
+	for (const hit of hits.slice().reverse()) {
+		const name = hit[1];
+		if (s.includes(name + '__zhOrig')) throw new Error('日志包装标识符冲突: ' + name);
+		s = s.slice(0, hit.index) + hit[0].replace('function ' + name + '(', 'function ' + name + '__zhOrig(') + s.slice(hit.index + hit[0].length);
+	}
+	for (const hit of hits) s += '\nfunction ' + hit[1] + '(text){return ' + hit[1] + '__zhOrig(__zhCompactPullLines(text))}\n';
+	s += '\n' + progressJs;
+	fs.writeFileSync(file, s);
+	if (isClient) clientLogPatched++;
+	console.log('已注入镜像层原地刷新: ' + path.relative(buildDir, file));
+}
+if (!clientLogPatched) {
+	console.error('错误: 未找到客户端日志行格式化器,拒绝构建无法原地刷新进度的镜像');
+	process.exit(1);
+}
+
+// 内容哈希文件不能原名覆盖:浏览器可能已永久缓存旧版本。更新所有 JS 资产名称及其引用。
+const cacheTag = createHash('sha256').update(mirrorJs + progressJs).digest('hex').slice(0, 12);
+const clientDir = path.join(buildDir, 'client');
+const renames = [];
+const names = new Map();
+const clientPaths = new Map();
+for (const file of walk(clientDir)) {
+	if (!file.endsWith('.js')) continue;
+	const relativeClient = path.relative(clientDir, file).split(path.sep).join('/');
+	if (!relativeClient.includes('/immutable/')) continue;
+	const name = path.basename(file);
+	const prior = /\.zh([a-f0-9]{12})\.js$/.exec(name);
+	if (prior) {
+		if (prior[1] !== cacheTag) throw new Error('请从未注入补丁的上游产物重新构建');
+		continue;
+	}
+	const renamed = name.slice(0, -3) + '.zh' + cacheTag + '.js';
+	names.set(name, renamed);
+	clientPaths.set(relativeClient, relativeClient.slice(0, -name.length) + renamed);
+	renames.push([file, path.join(path.dirname(file), renamed)]);
+}
+if (names.size) {
+	const references = (values) => new RegExp([...values].map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g');
+	const referenceRe = references(names.keys());
+	const serverReferenceRe = references(clientPaths.keys());
+	for (const file of walk(buildDir)) {
+		if (!/\.(js|json|css|html|map)$/.test(file)) continue;
+		const previous = fs.readFileSync(file, 'utf8');
+		const isClient = path.relative(buildDir, file).split(path.sep)[0] === 'client';
+		// 服务端可能有同名 chunk,只改完整客户端资产路径,不改其自身的相对模块引用。
+		const next = isClient ? previous.replace(referenceRe, (name) => names.get(name)) :
+			previous.replace(serverReferenceRe, (name) => clientPaths.get(name));
+		// 被修改的日志 chunk 也可能已经有旧压缩副本,即使其引用没有变化也要刷新。
+		if (next !== previous) fs.writeFileSync(file, next);
+		if (fs.existsSync(file + '.gz')) fs.writeFileSync(file + '.gz', gzipSync(next));
+		if (fs.existsSync(file + '.br')) fs.writeFileSync(file + '.br', brotliCompressSync(next));
+	}
+	for (const [before, after] of renames) {
+		for (const suffix of ['', '.gz', '.br', '.map', '.map.gz', '.map.br']) {
+			if (fs.existsSync(before + suffix)) fs.renameSync(before + suffix, after + suffix);
+		}
+	}
+}
+console.log('客户端缓存版本: ' + cacheTag);

@@ -595,9 +595,144 @@ function __zhMirrorSplitTag(image) {
 	return { from: image, tag: 'latest' };
 }
 
+function __zhPullBytes(bytes) {
+	var units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+	var index = 0;
+	while (bytes >= 1024 && index < units.length - 1) { bytes /= 1024; index++; }
+	return bytes.toFixed(index ? 2 : 0) + ' ' + units[index];
+}
+
+// 使用 daemon 的 progressDetail 字节计数采样,不从 CLI 的状态文本猜测速率。
+function __zhPullProgress(image, emit) {
+	var session = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+	var layers = new Map();
+	return function (event) {
+		var status = event.status || '';
+		if (!event.id || !/^(Pulling fs layer|Waiting|Downloading|Verifying Checksum|Download complete|Extracting|Pull complete|Already exists)$/.test(status)) {
+			if (status) emit((event.id ? event.id + ': ' : '') + status);
+			return;
+		}
+		var now = Date.now();
+		var layer = layers.get(event.id);
+		if (!layer) { layer = { status: '', time: now, sample: 0, emitted: 0, bytes: 0, total: 0, rate: null }; layers.set(event.id, layer); }
+		var previous = layer.status;
+		var detail = event.progressDetail || {};
+		var current = Number.isFinite(detail.current) && detail.current >= 0 ? detail.current : null;
+		var total = Number.isFinite(detail.total) && detail.total > 0 ? detail.total : null;
+		if (status === 'Downloading' && current !== null) {
+			if (previous !== status || current < layer.sample) { layer.sample = current; layer.time = now; layer.rate = null; }
+			else if (now - layer.time >= 1000) {
+				layer.rate = (current - layer.sample) * 1000 / (now - layer.time);
+				layer.sample = current; layer.time = now;
+			}
+			layer.bytes = current;
+			if (total) layer.total = total;
+		}
+		layer.status = status;
+		if ((status === 'Download complete' || status === 'Pull complete') && layer.total) layer.bytes = layer.total;
+		if (previous === status && now - layer.emitted < 1000) return;
+		layer.emitted = now;
+		var labels = { 'Pulling fs layer': '等待下载', Waiting: '等待下载', Downloading: '下载中',
+			'Verifying Checksum': '校验中', 'Download complete': '下载完成', Extracting: '解压中',
+			'Pull complete': '完成', 'Already exists': '已存在' };
+		var bytes = status === 'Extracting' ? current : layer.bytes;
+		var size = status === 'Extracting' ? total : layer.total;
+		var text = image + ' | ' + event.id + ' | ' + labels[status];
+		if (bytes !== null && size > 0) text += ' | ' + __zhPullBytes(bytes) + ' / ' + __zhPullBytes(size) + ' (' + Math.min(100, bytes / size * 100).toFixed(1) + '%)';
+		if (status === 'Downloading') text += ' | ' + (layer.rate === null ? '速度采样中' : __zhPullBytes(layer.rate) + '/s');
+		emit('@@zhpull:' + session + ':' + encodeURIComponent(image) + ':' + encodeURIComponent(event.id) + '@@ ' + text);
+	};
+}
+
+// 由 Docker CLI 自己连接 daemon,保留 DOCKER_HOST/context/TLS 配置;http 负责解析 chunked JSON 流。
+async function __zhCliPullJson(binary, image, cwd, env, onEvent) {
+	var cp = await import('node:child_process');
+	var http = await import('node:http');
+	var Duplex = (await import('node:stream')).Duplex;
+	var StringDecoder = (await import('node:string_decoder')).StringDecoder;
+	var endpoint = env.DOCKER_HOST;
+	if (env.DOCKER_CONTEXT || !endpoint) {
+		try {
+			endpoint = await new Promise(function (resolve, reject) {
+				var contextArgs = ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'];
+				if (env.DOCKER_CONTEXT) contextArgs.push(env.DOCKER_CONTEXT);
+				cp.execFile(binary, contextArgs, { cwd: cwd, env: env, timeout: 30000 }, function (error, stdout) {
+					if (error) reject(error); else resolve(stdout.trim());
+				});
+			});
+		} catch (e) { return { code: -1, out: '无法读取 Docker context: ' + e.message, unavailable: true }; }
+	}
+	var host = 'docker';
+	try { var target = new URL(endpoint); if (/^(tcp:|http:|https:)$/.test(target.protocol)) host = target.host; } catch (e) {}
+	return new Promise(function (resolve) {
+		var proc, socket, request, timer, agent;
+		var done = false, connected = false, stderr = '';
+		var finish = function (code, message) {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			if (request) request.destroy();
+			if (agent) agent.destroy();
+			if (socket) socket.destroy();
+			if (proc) { try { proc.kill(); } catch (e) {} }
+			resolve({ code: code, out: message || '', unavailable: !connected });
+		};
+		try {
+			proc = cp.spawn(binary, ['system', 'dial-stdio'], { cwd: cwd, env: env, stdio: ['pipe', 'pipe', 'pipe'] });
+			proc.stderr.on('data', function (chunk) { stderr = (stderr + chunk.toString()).slice(-4096); });
+			proc.on('error', function (e) { finish(-1, e.message); });
+			proc.on('close', function (code) { if (!done) finish(-1, stderr || 'Docker 进度连接提前关闭: ' + code); });
+			socket = Duplex.from({ readable: proc.stdout, writable: proc.stdin });
+			socket.on('error', function (e) { finish(-1, e.message); });
+			agent = new http.Agent({ keepAlive: false });
+			agent.createConnection = function () { return socket; };
+			var version = env.DOCKER_API_VERSION;
+			var prefix = version && /^\d+\.\d+$/.test(version) ? '/v' + version : '';
+			request = http.request({ host: 'docker', method: 'POST',
+				path: prefix + '/images/create?fromImage=' + encodeURIComponent(image), agent: agent,
+				headers: { Host: host, 'Content-Length': '0', Connection: 'close' } }, function (res) {
+				connected = true;
+				var decoder = new StringDecoder('utf8');
+				var pending = '', errorBody = '', messages = 0;
+				var line = function (text) {
+					if (done || !text.trim()) return;
+					var event;
+					try { event = JSON.parse(text); } catch (e) { finish(-1, 'Docker 返回无效的拉取进度'); return; }
+					if (!event || typeof event !== 'object') { finish(-1, 'Docker 返回无效的拉取进度'); return; }
+					if (event.error || (event.errorDetail && event.errorDetail.message)) {
+						finish(-1, event.error || event.errorDetail.message); return;
+					}
+					messages++;
+					onEvent(event);
+				};
+				res.on('data', function (chunk) {
+					if (done) return;
+					var text = decoder.write(chunk);
+					if (res.statusCode < 200 || res.statusCode >= 300) { errorBody = (errorBody + text).slice(-4096); return; }
+					pending += text;
+					var lines = pending.split('\n'); pending = lines.pop();
+					for (var item of lines) line(item);
+					if (pending.length > 1024 * 1024) finish(-1, 'Docker 进度行过长');
+				});
+				res.on('aborted', function () { finish(-1, 'Docker 拉取进度流中断'); });
+				res.on('error', function (e) { finish(-1, e.message); });
+				res.on('end', function () {
+					if (res.statusCode < 200 || res.statusCode >= 300) { finish(-1, 'HTTP ' + res.statusCode + ' ' + errorBody); return; }
+					line(pending + decoder.end());
+					if (!messages) { finish(-1, 'Docker 未返回拉取结果'); return; }
+					finish(0, '');
+				});
+			});
+			request.on('error', function (e) { finish(-1, stderr || e.message); });
+			timer = setTimeout(function () { finish(-1, 'Docker 镜像拉取超时'); }, 30 * 60 * 1000);
+			request.end();
+		} catch (e) { finish(-1, e.message); }
+	});
+}
+
 /**
  * Stack 部署前预拉取:用与 compose 相同的参数/环境,先经镜像站拉好镜像并 tag 回原名,
- * compose 随后发现本地已有镜像便不再拉取。
+ * 全部就绪后,显式 pull 跳过重复操作,整栈 up --pull always 改为复用本地镜像。
  * 拉取语义对齐 compose:up 默认只拉本地缺失的;--pull always 或 pull 操作全部拉;--pull never 跳过。
  * 这里只做加速,任何失败都静默交还给 compose 按原地址处理,绝不抛出。
  *   op/pullPolicy/serviceName — 对应 buildComposeOperationArgs 的入参
@@ -631,7 +766,7 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 		var run = function (argv, input, timeoutMs, onLine) {
 			return new Promise(function (resolve) {
 				var out = '';
-				var streams = [0, 1].map(function () { return { decoder: new StringDecoder('utf8'), pending: '' }; });
+				var streams = [0, 1].map(function () { return { decoder: new StringDecoder('utf8'), pending: '', out: '' }; });
 				var done = false;
 				var finish = function (code) {
 					if (done) return;
@@ -641,7 +776,7 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 						stream.pending += stream.decoder.end();
 						if (onLine && stream.pending.trim()) onLine(stream.pending);
 					}
-					resolve({ code: code, out: out });
+					resolve({ code: code, out: out, stdout: streams[0].out, stderr: streams[1].out });
 				};
 				var proc;
 				try {
@@ -661,6 +796,8 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 					var s = stream.decoder.write(d);
 					out += s;
 					if (out.length > 65536) out = out.slice(-32768);
+					stream.out += s;
+					if (stream.out.length > 65536) stream.out = stream.out.slice(-32768);
 					if (!onLine) return;
 					stream.pending += s;
 					var lines = stream.pending.split(/[\r\n]+/);
@@ -689,18 +826,19 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 			return;
 		}
 		var seen = Object.create(null);
-		var images = cfg.out.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(function (s) {
+		var images = cfg.stdout.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(function (s) {
 			if (!s || seen[s]) return false;
 			seen[s] = true;
 			return true;
 		});
+		var allReady = images.length > 0;
 
 		for (var i = 0; i < images.length; i++) {
 			var ref = __zhMirrorSplitTag(images[i]);
-			if (!ref) continue;
+			if (!ref) { allReady = false; continue; }
 			var parsed = __zhMirrorParseRef(ref.from);
 			var mirrors = table[parsed.registry];
-			if (!mirrors) continue;
+			if (!mirrors) { allReady = false; continue; }
 			var origRef = ref.from + ':' + ref.tag;
 
 			if (!pullAll) {
@@ -719,16 +857,11 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 				tried.push(mirror);
 				var mirrorRef = mirror + '/' + parsed.path + ':' + ref.tag;
 				report('开始拉取 ' + origRef + ' ← ' + mirrorRef);
-				var last = 0;
-				var pr = await run(['pull', mirrorRef], null, 30 * 60 * 1000, function (line) {
-					// 页面逐行接收层状态;仅后台 console 限流,避免丢失页面上的完成/错误行。
-					forward(line);
-					var now = Date.now();
-					if (now - last > 3000 || /^(Status|Digest|Error|error)/.test(line)) {
-						last = now;
-						console.log(tag0 + '   ' + line);
-					}
-				});
+				var pr = await __zhCliPullJson(args[0], mirrorRef, cwd, env, __zhPullProgress(origRef, forward));
+				if (pr.unavailable) {
+					report('当前 Docker CLI 无法建立字节进度通道,使用普通拉取: ' + pr.out, true);
+					pr = await run(['pull', mirrorRef], null, 30 * 60 * 1000, forward);
+				}
 				if (pr.code !== 0) {
 					await __zhCleanupCapture(cleanup, ref.from, ref.tag, mirrors);
 					__zhMirrorProbeFailed(mirror, parsed.path, ref.tag, 'docker pull 失败');
@@ -744,7 +877,18 @@ async function __zhComposePrepull(op, pullPolicy, serviceName, args, baseLen, cw
 				report('镜像拉取完成: ' + origRef + ' (' + mirror + ')');
 				done = true;
 			}
-			if (!done) report('无可用镜像站,交给 Compose 从原地址拉取: ' + origRef, true);
+			if (!done) { allReady = false; report('无可用镜像站,交给 Compose 从原地址拉取: ' + origRef, true); }
+		}
+		if (allReady && op === 'pull') {
+			report('所选镜像均已拉取并恢复原标签,跳过重复的 Compose pull');
+			return { skipCompose: true, output: '镜像拉取完成: ' + images.join(', ') };
+		}
+		if (allReady && op === 'up' && pullPolicy === 'always' && (!serviceName || args.includes('--no-deps'))) {
+			// 仅全部镜像成功且覆盖当前部署范围时禁用二次拉取;部分失败仍按原策略交还 Compose。
+			var pullIndex = args.indexOf('--pull', baseLen);
+			if (pullIndex !== -1) args[pullIndex + 1] = 'never';
+			else args.push('--pull', 'never');
+			report('所需镜像已就绪,Compose 将复用本地镜像,不再重复回源拉取');
 		}
 		report('镜像预拉取阶段结束,继续执行 Compose');
 	} catch (e) {

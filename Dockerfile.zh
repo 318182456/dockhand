@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.4
 # =============================================================================
 # Dockhand 国内镜像加速 overlay 镜像
-# 基于上游官方镜像 fnsys/dockhand,构建期仅注入服务端镜像加速补丁。
+# 基于上游官方镜像 fnsys/dockhand,构建期注入镜像加速及进度显示补丁。
 # 不合并上游源码、不自行编译前端 —— 上游怎么发版,这里只做一层轻量补丁。
 # =============================================================================
 ARG UPSTREAM_VERSION=latest
@@ -15,6 +15,7 @@ FROM node:24-slim AS patcher
 COPY --from=official /app/build /build
 COPY scripts/zh-runtime/registry-mirror.template.js /zh/registry-mirror.template.js
 COPY scripts/zh-runtime/inject.mjs /zh/inject.mjs
+COPY scripts/zh-runtime/pull-progress.template.js /zh/pull-progress.template.js
 RUN node /zh/inject.mjs /build /zh
 
 # -----------------------------------------------------------------------------
