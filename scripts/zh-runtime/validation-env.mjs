@@ -81,9 +81,29 @@ export function injectValidationEnv(buildDir, templatePath, globalTemplatePath) 
   fs.writeFileSync(target.file, source);
   return { patched: true, file: target.file };
 }
+
+export function injectEnvMarkers(buildDir, templatePath, globalTemplatePath) {
+  const items = [...walk(path.join(buildDir, 'server'))].map(file => ({ file, source: fs.readFileSync(file, 'utf8') }));
+  const targets = items.filter(item => item.source.includes('Error validating stack env vars:'));
+  if (targets.length !== 1) throw Error('ValidationEnv: expected one env-marker endpoint');
+  const target = targets[0];
+  if (target.source.includes('/* __zhGlobalEnvMarkers */')) return { patched: false, file: target.file };
+  const provider = dbExport(items, 'getConfigSets');
+  const returns = [...target.source.matchAll(/([\w$]+)=\{valid:[\w$]+\.length===0,required:[\w$]+,optional:[\w$]+,defined:[\w$]+,missing:[\w$]+,unused:[\w$]+\};return json\(\1\)/g)];
+  if (returns.length !== 1) throw Error('ValidationEnv: env-marker result shape changed');
+  const match = returns[0];
+  const call = 'async()=>{const m=await import(' + JSON.stringify(relative(target.file, provider.file)) + ');return m[' + JSON.stringify(provider.key) + ']();}';
+  const source = target.source.replace('return json(' + match[1] + ')', () =>
+    'return json(await __zhGlobalEnvMarkers(' + match[1] + ',' + call + '))/* __zhGlobalEnvMarkers */') +
+    '\n' + fs.readFileSync(globalTemplatePath, 'utf8') + '\n' + fs.readFileSync(templatePath, 'utf8');
+  fs.writeFileSync(target.file, source);
+  return { patched: true, file: target.file };
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [, , build, template, globalTemplate] = process.argv;
   const result = injectValidationEnv(build, template, globalTemplate);
+  const markers = injectEnvMarkers(build, template, globalTemplate);
+  console.log('全局变量编辑器提示补丁: ' + path.relative(build, markers.file) + ' (' + (markers.patched ? '已注入' : '已存在') + ')');
   console.log('全局变量校验补丁: ' + path.relative(build, result.file) + ' (' + (result.patched ? '已注入' : '已存在') + ')');
 }
-

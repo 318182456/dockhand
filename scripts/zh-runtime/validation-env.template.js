@@ -30,3 +30,18 @@ async function __zhValidationEnv(name, compose, context, env, getSets, getSource
   return { compose: changed ? yaml.dump(document, { lineWidth: -1, noRefs: true }) : compose, env: merged };
 }
 
+
+// The editor's missing-variable markers use a separate name-only endpoint.
+async function __zhGlobalEnvMarkers(result, getSets) {
+  const globals = await __zhReadGlobalDefaults(getSets);
+  if (!globals) return result;
+  const referenced = new Set([...(result.required || []), ...(result.optional || [])]);
+  const supplied = Object.keys(globals).filter(key => referenced.has(key));
+  const defined = [...new Set([...(result.defined || []), ...supplied])].sort();
+  const missing = (result.missing || []).filter(key => !Object.hasOwn(globals, key));
+  // Never send global values, or mark unreferenced shared defaults as unused.
+  const source = process.env.ZH_GLOBAL_ENV_CONFIG_SET.trim();
+  const variables = Object.keys(globals).sort().map(key => ({ key, derived: key === 'TRAEFIK_DOMAIN_REGEX' && Object.hasOwn(globals, 'TRAEFIK_DOMAINS') }));
+  return { ...result, defined, missing, valid: missing.length === 0, globalEnv: { source, variables } };
+}
+

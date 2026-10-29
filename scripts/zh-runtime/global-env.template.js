@@ -1,8 +1,8 @@
 // Loaded only when ZH_GLOBAL_ENV_CONFIG_SET explicitly names a Config Set.
 // These are plain-text interpolation defaults, not a secret store.
-async function __zhGlobalEnv(options, envVars, secretVars, getConfigSets) {
+async function __zhReadGlobalDefaults(getConfigSets) {
   const selected = (process.env.ZH_GLOBAL_ENV_CONFIG_SET || '').trim();
-  if (!selected || selected === 'off') return secretVars;
+  if (!selected || selected === 'off') return null;
   const sets = await getConfigSets();
   const matches = sets.filter(set => set.name === selected);
   if (matches.length !== 1) throw new Error('[GlobalEnv] Config Set not found or ambiguous');
@@ -32,7 +32,12 @@ async function __zhGlobalEnv(options, envVars, secretVars, getConfigSets) {
     }
     globals.TRAEFIK_DOMAIN_REGEX = domains.map(domain => domain.replaceAll('.', '[.]')).join('|');
   }
-  if (!Object.keys(globals).length) return secretVars;
+  return globals;
+}
+
+async function __zhGlobalEnv(options, envVars, secretVars, getConfigSets) {
+  const globals = await __zhReadGlobalDefaults(getConfigSets);
+  if (!globals || !Object.keys(globals).length) return secretVars;
   const fs = await import('node:fs');
   const path = await import('node:path');
   const composeDir = options.composePath ? path.dirname(options.composePath) : options.workingDir;
