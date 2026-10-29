@@ -72,61 +72,104 @@ volumes:
 
 ## 堆栈全局变量（可选）
 
-可以复用 Dockhand 的 **Config Sets（配置集）** 页面维护 Compose 插值默认值。此功能由本镜像补丁提供；官方 Dockhand 的配置集仍是创建容器时的预设。
+本镜像可以从 Dockhand 的 **Config Sets（配置集）** 中读取 Compose 插值默认值。官方配置集仍是创建容器时的预设；此扩展只读取选定配置集的环境变量，不批量套用标签、端口、挂载、网络或重启策略。
 
-1. 在 Config Sets 中创建名为“全局变量”的配置集，只填写环境变量，例如：
+在 Config Sets 创建“全局变量”，例如：
 
-   | 变量 | 示例值 |
-   |---|---|
-   | `TRAEFIK_DOMAIN` | `wangxy.host` |
-   | `TRAEFIK_DOMAIN_ALT` | `318182456.asia` |
-   | `TRAEFIK_HTTPS_PORT` | `9443` |
-   | `APP_PROXY_URL` | `http://proxy.example.org:7890` |
+| 变量 | 示例值 | 用途 |
+|---|---|---|
+| `TRAEFIK_DOMAINS` | `example.com,example.net` | 反代根域名列表，逗号分隔，可继续增加 |
+| `TRAEFIK_DOMAIN` | `example.com` | Dockhand 快捷链接使用的主域名 |
+| `TRAEFIK_HTTPS_PORT` | `9443` | HTTPS 外部端口 |
+| `HTTP_PROXY` | `http://proxy.example.org:7890` | 可选代理 |
+| `HTTPS_PROXY` | `http://proxy.example.org:7890` | 可选代理 |
+| `NO_PROXY` | `localhost,127.0.0.1` | 按实际网络填写 |
 
-2. 在 **Dockhand 自己的** Compose 服务中启用，重新部署 Dockhand：
+可以自行增加业务变量，在 Compose 中通过 `${变量名}` 引用。在 **Dockhand 自己的** Compose 中启用后重新部署：
 
-   ```yaml
-   environment:
-     ZH_GLOBAL_ENV_CONFIG_SET: "全局变量"
-   ```
+```yaml
+environment:
+  ZH_GLOBAL_ENV_CONFIG_SET: "全局变量"
+```
 
-3. 默认 Compose 模板和现有堆栈可引用这些变量。保留原服务配置，只补充对应字段，例如：
+如果使用列表写法，应写成 `- ZH_GLOBAL_ENV_CONFIG_SET=全局变量`；不要在等号后的值外再套双引号。
 
-   ```yaml
-   environment:
-     HTTP_PROXY: "${APP_PROXY_URL}"
-     HTTPS_PROXY: "${APP_PROXY_URL}"
-   labels:
-     traefik.enable: "true"
-     dockhand.url: "https://manager.${TRAEFIK_DOMAIN}:${TRAEFIK_HTTPS_PORT:-8443}"
-     traefik.http.routers.traefik-manager.rule: "Host(`manager.${TRAEFIK_DOMAIN}`) || Host(`manager.${TRAEFIK_DOMAIN_ALT}`)"
-   ```
+### Traefik 的统一域名规则
 
-普通单网页服务也可以把标签预先写在默认模板中；以后只需在每个堆栈自己的变量页填写 `TRAEFIK_SUBDOMAIN` 和 `TRAEFIK_CONTAINER_PORT`，例如 `hindsight`、`9999`。其余值引用上述全局配置集。使用标签列表，因为 Compose 只会插值值，映射形式的标签键不会被插值：
+在 Traefik 服务的 Compose 中传入域名列表：
+
+```yaml
+environment:
+  TRAEFIK_DOMAINS: "${TRAEFIK_DOMAINS}"
+```
+
+在 Traefik 静态配置中设置 Docker 提供器的 `defaultRule`，按容器的 `dockhand.subdomain` 标签和全局域名列表生成规则：
+
+```yaml
+providers:
+  docker:
+    exposedByDefault: false
+    defaultRule: >-
+      {{- $prefix := index .Labels "dockhand.subdomain" -}}
+      {{- $rules := list -}}
+      {{- if $prefix -}}
+      {{- range $value := splitList "," (env "TRAEFIK_DOMAINS") -}}
+      {{- $domain := trim $value -}}
+      {{- if $domain -}}
+      {{- $rules = append $rules (printf "Host(`%s.%s`)" $prefix $domain) -}}
+      {{- end -}}
+      {{- end -}}
+      {{- end -}}
+      {{- if $rules -}}{{ join " || " $rules }}{{- else -}}Host(`disabled.invalid`){{- end -}}
+```
+
+保留已有提供器的 endpoint、watch 等配置。新增根域名后，重新部署 Traefik 以更新其环境变量。采用默认规则的应用不需要逐个改域名标签；显式写了 `*.rule` 的路由优先使用显式规则。DNS 和证书也需覆盖新增域名。
+
+### 新建堆栈只填写前缀和端口
+
+普通单网页服务在堆栈变量中填写 `TRAEFIK_SUBDOMAIN` 和 `TRAEFIK_CONTAINER_PORT`，例如 `myapp`、`3000`，并使用以下标签。容器端口填写内部 HTTP 端口，不是宿主机映射端口。
 
 ```yaml
 labels:
   - "traefik.enable=true"
-  - "dockhand.url=https://${TRAEFIK_SUBDOMAIN}.${TRAEFIK_DOMAIN}:${TRAEFIK_HTTPS_PORT:-8443}"
-  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.rule=Host(`${TRAEFIK_SUBDOMAIN}.${TRAEFIK_DOMAIN}`) || Host(`${TRAEFIK_SUBDOMAIN}.${TRAEFIK_DOMAIN_ALT}`)"
+  - "dockhand.subdomain=${TRAEFIK_SUBDOMAIN:?请填写子域名前缀}"
+  - "dockhand.url=https://${TRAEFIK_SUBDOMAIN}.${TRAEFIK_DOMAIN}:${TRAEFIK_HTTPS_PORT}"
   - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.entrypoints=websecure"
   - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.tls=true"
   - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.service=${TRAEFIK_SUBDOMAIN}-web"
-  - "traefik.http.services.${TRAEFIK_SUBDOMAIN}-web.loadbalancer.server.port=${TRAEFIK_CONTAINER_PORT}"
+  - "traefik.http.services.${TRAEFIK_SUBDOMAIN}-web.loadbalancer.server.port=${TRAEFIK_CONTAINER_PORT:?请填写容器内部端口}"
 ```
 
-端口填写容器内部 HTTP 端口，不是宿主机映射端口。同一 Traefik 实例中子域名前缀应唯一；同一堆栈有多个网页/API 服务时，需要分别命名路由并配置各自的端口。SSO、代理和后端 HTTPS 按应用选择，以上模板不会自动开启这些功能。
+使用标签列表，因为 Compose 不会插值映射形式的标签键。同一 Traefik 实例中前缀应唯一。多服务、多端口和特殊 API 路由需要分别配置；SSO、代理和后端 HTTPS 按应用选择。
+
+保留用户原来的 Compose 配置，只合并所需字段。例如需要代理的服务可以写 `HTTP_PROXY: "${HTTP_PROXY}"`；原有 `NO_PROXY` 等设置继续保留。全局变量不会自动全部传入容器，需要在服务配置中引用。
+
+### 同一个容器的网页和 API
+
+多端口应用需要分别设置 router、service、TLS 和容器端口。例如已有网页路由的 Hindsight 可以补上以下标签，API 默认使用同一前缀加 `-api`：
+
+```yaml
+  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.rule=HostRegexp(`^${TRAEFIK_SUBDOMAIN}[.](${TRAEFIK_DOMAIN_REGEX})$$`)"
+  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.rule=HostRegexp(`^${TRAEFIK_SUBDOMAIN}-api[.](${TRAEFIK_DOMAIN_REGEX})$$`)"
+  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.entrypoints=websecure"
+  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.tls=true"
+  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.service=${TRAEFIK_SUBDOMAIN}-api"
+  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.middlewares=basic-headers@file"
+  - "traefik.http.services.${TRAEFIK_SUBDOMAIN}-api.loadbalancer.server.port=${TRAEFIK_API_PORT:-8888}"
+```
+
+`TRAEFIK_DOMAIN_REGEX` 由本扩展在部署时从 `TRAEFIK_DOMAINS` 自动生成、去重并转义，不用在配置集中手动维护第二份域名列表。上例的 `$$` 会由 Compose 转为正则表达式的结尾锚点 `$`。更改域名列表后，除了重新部署 Traefik，也需重新部署使用这种显式标签的多路由应用。普通单路由应用可以继续使用提供器的默认规则。
 
 
-每次 Dockhand 堆栈操作都会重新读取全局值，不缓存，不需要把配置集逐个“应用”到容器。这里只读取所选配置集的环境变量，不套用其标签、端口、挂载、网络或重启策略；也不会改写用户的 Compose 模板或应用配置文件。Traefik 标签仍须写在各服务或默认模板中，路由名称、子域名前缀及容器端口按应用填写。当前补丁没有增加“新建堆栈选择配置集并插入标签”的界面。
+### 优先级与生效方式
 
-全局值只作为默认值：应用自己的 `.env`、自定义 env 文件、堆栈已有变量和秘密变量优先，包含显式空值。值按字面量传递，不展开全局值里面的 `$OTHER_VAR`。这里只为 Compose 提供插值变量；如需传入容器，仍须在服务的 `environment` 或标签里引用。代理不自动注入全部应用，需要代理的服务才引用相应变量；`NO_PROXY` 等原有配置继续保留。
+每次堆栈操作都会重新读取配置集，不缓存。应用自己的 `.env`、自定义 env 文件、堆栈已有变量和秘密变量优先，包含显式空值。值按字面量传递，不展开全局值里面的 `$OTHER_VAR`。本扩展不改写用户的 Compose 文件或默认模板，也没有新增“选择配置集插入标签”的界面。
 
-Config Sets 中的值以普通配置保存，只适合域名、端口等非敏感设置；密码继续使用原有秘密变量/提供器。拥有此配置集编辑权限的用户能影响所有启用它的堆栈，应按全局配置管理其权限。为保护 Docker 连接和执行环境，禁止使用 `DOCKER_*`、`COMPOSE_*`、`NODE_*`、`LD_*`、`DYLD_*`、`PATH`、`HOME` 等控制变量名。启用后，配置集缺失、重名、重复变量或非法变量会中止操作并报错。
+Config Sets 是普通配置存储，密码继续使用秘密变量/提供器。拥有所选配置集编辑权限的用户能影响全部引用它的堆栈，应按全局配置管理权限。禁止使用 `DOCKER_*`、`COMPOSE_*`、`NODE_*`、`LD_*`、`DYLD_*`、`PATH`、`HOME` 等执行控制变量。配置集缺失、重名、重复变量或非法变量会中止操作并报错。
 
-修改全局值后，**重新部署相关堆栈** 才会更新容器配置；不会自动重建正在运行的容器。例中的 9443 是 Traefik 测试入口；以后改回 8443，需同时调整 Traefik 的实际监听/映射和相关 URL，再重新部署。仅修改快捷链接变量不会迁移入口。
+修改全局值后，重新部署受影响的堆栈才会更新容器，不会自动重建正在运行的服务。改变 URL 端口变量不会改变 Traefik 实际监听/映射，切换入口时需同步调整。关闭功能可删除 `ZH_GLOBAL_ENV_CONFIG_SET` 或设为 `off`。外部终端直接运行 `docker compose` 仍须自行提供变量。
 
-不配置 `ZH_GLOBAL_ENV_CONFIG_SET` 或设为 `off` 即关闭。该补丁仅作用于通过本 Dockhand 执行的堆栈操作，外部终端直接运行 `docker compose` 仍须自行提供这些变量。本地/直连和 Hawser 共用变量分派入口；测试覆盖变量合并及编译代码注入，不等同于已验证真实 Hawser agent 部署。
+本地/直连和 Hawser 共用变量分派入口。单元测试及实际官方镜像补丁注入验证不等同于真实 Hawser agent 部署验证。
 
 
 ## License

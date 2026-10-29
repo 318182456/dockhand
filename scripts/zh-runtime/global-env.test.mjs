@@ -131,3 +131,25 @@ test('resolve official Rollup exports with spaces, newlines and shorthand, then 
     assert.equal(injectGlobalEnv(build, templatePath).patched, false);
   }
 });
+
+test('derive an escaped root-domain pattern for any number of explicit routers', async () => {
+  process.env.ZH_GLOBAL_ENV_CONFIG_SET = '全局变量';
+  const values={TRAEFIK_DOMAINS:' EXAMPLE.com,example.net,third.example.org,example.com ',TRAEFIK_DOMAIN_REGEX:'stale-value'};
+  const result=await apply(options,{},undefined,provider(values));
+  assert.equal(result.TRAEFIK_DOMAIN_REGEX,'example[.]com|example[.]net|third[.]example[.]org');
+  const web=new RegExp('^app[.]('+result.TRAEFIK_DOMAIN_REGEX+')$');
+  const api=new RegExp('^app-api[.]('+result.TRAEFIK_DOMAIN_REGEX+')$');
+  for(const domain of ['example.com','example.net','third.example.org']){
+    assert.ok(web.test('app.'+domain));
+    assert.ok(api.test('app-api.'+domain));
+  }
+  for(const host of ['app.exampleXcom','app.example.com.evil.test','app-api.example.com'])assert.equal(web.test(host),false);
+  assert.equal(result.TRAEFIK_DOMAINS,values.TRAEFIK_DOMAINS);
+});
+
+test('reject malformed domain lists instead of accepting route expressions', async () => {
+  process.env.ZH_GLOBAL_ENV_CONFIG_SET='全局变量';
+  for(const value of ['',', ,','example.com|evil.test','-bad.example','bad..example','example.com,bad@evil']){
+    await assert.rejects(apply(options,{},undefined,provider({TRAEFIK_DOMAINS:value})),/Invalid TRAEFIK_DOMAINS/);
+  }
+});

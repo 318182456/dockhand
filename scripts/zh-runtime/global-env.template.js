@@ -18,6 +18,20 @@ async function __zhGlobalEnv(options, envVars, secretVars, getConfigSets) {
     if (Object.hasOwn(globals, key)) throw new Error('[GlobalEnv] Duplicate variable name');
     globals[key] = entry.value;
   }
+  // A container can expose several routers with independent subdomains/ports.
+  // Docker's defaultRule has no per-router name in its template model, so those
+  // routers use an explicit HostRegexp label with this derived root pattern.
+  if (Object.hasOwn(globals, 'TRAEFIK_DOMAINS')) {
+    const { domainToASCII } = await import('node:url');
+    const entries = globals.TRAEFIK_DOMAINS.split(',').map(value => value.trim()).filter(Boolean);
+    const domains = [...new Set(entries.map(value =>
+      domainToASCII(value.replace(/\.$/, '')).toLowerCase()))];
+    if (!domains.length || domains.some(domain => !domain || domain.length > 253 ||
+        domain.split('.').some(label => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)))) {
+      throw new Error('[GlobalEnv] Invalid TRAEFIK_DOMAINS list');
+    }
+    globals.TRAEFIK_DOMAIN_REGEX = domains.map(domain => domain.replaceAll('.', '[.]')).join('|');
+  }
   if (!Object.keys(globals).length) return secretVars;
   const fs = await import('node:fs');
   const path = await import('node:path');
