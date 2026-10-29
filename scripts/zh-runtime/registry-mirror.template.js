@@ -602,6 +602,43 @@ function __zhPullBytes(bytes) {
 	return bytes.toFixed(index ? 2 : 0) + ' ' + units[index];
 }
 
+// 自更新的独立本机拉取:保留凭据与 daemon 选择,复用同一字节采样器。
+async function __zhSelfUpdatePull(request, authHeader, image, onProgress) {
+	var ref = __zhMirrorSplitTag(image);
+	var query = new URLSearchParams({ fromImage: ref ? ref.from : image });
+	if (ref) query.set('tag', ref.tag);
+	var headers = await authHeader(image);
+	var response = await request('/images/create?' + query, { method: 'POST', headers: headers });
+	if (!response.ok) throw new Error('Failed to pull image: ' + await response.text());
+	if (!response.body) throw new Error('Image pull returned no progress stream');
+	var emit = function (line) { if (typeof onProgress === 'function') onProgress(line); };
+	var progress = __zhPullProgress(image, emit);
+	var handle = function (line) {
+		if (!line.trim()) return;
+		var event = JSON.parse(line);
+		if (!event || typeof event !== 'object') throw new Error('Invalid image pull progress');
+		if (event.error || event.errorDetail && event.errorDetail.message) {
+			throw new Error(String(event.error || event.errorDetail.message));
+		}
+		progress(event);
+	};
+	var reader = response.body.getReader(), decoder = new TextDecoder(), pending = '';
+	try {
+		for (;;) {
+			var part = await reader.read();
+			if (part.done) break;
+			pending += decoder.decode(part.value, { stream: true });
+			var lines = pending.split('\n');
+			pending = lines.pop();
+			for (var line of lines) handle(line);
+		}
+		handle(pending + decoder.decode());
+	} catch (e) {
+		await reader.cancel(e).catch(function () {});
+		throw e;
+	} finally { reader.releaseLock(); }
+}
+
 // 使用 daemon 的 progressDetail 字节计数采样,不从 CLI 的状态文本猜测速率。
 function __zhPullProgress(image, emit) {
 	var session = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);

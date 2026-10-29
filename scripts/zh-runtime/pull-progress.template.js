@@ -14,3 +14,17 @@ function __zhCompactPullLines(text) {
 	}
 	return result.join('\n');
 }
+
+// 自更新弹窗每一步持有自己的日志数组;只保留层行的索引,不积累隐藏日志副本。
+var __zhSelfUpdateRows = new WeakMap();
+function __zhAppendPullLog(step, message) {
+	var rows = __zhSelfUpdateRows.get(step);
+	if (!rows) { rows = new Map(); __zhSelfUpdateRows.set(step, rows); }
+	var marker = /@@zhpull:([A-Za-z0-9_%:.-]+)@@ /.exec(message);
+	var logs = step.logs.slice();
+	if (!marker) { logs.push(message); return logs; }
+	var clean = message.slice(0, marker.index) + message.slice(marker.index + marker[0].length);
+	if (rows.has(marker[1])) logs[rows.get(marker[1])] = clean;
+	else { rows.set(marker[1], logs.length); logs.push(clean); }
+	return logs;
+}

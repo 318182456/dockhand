@@ -123,7 +123,60 @@ if (prepullPatched !== 1) {
 	process.exit(1);
 }
 
-// ---- 3) 启动时安装更新检查加速,先于 scheduler/hook 等入口捕获全局 fetch ----
+// ---- 3) 自更新使用独立的本机 Docker streaming 请求,不经过 dockerFetch ----
+// 只在自更新 route 中定位 pullImageLocal 的调用,不改变普通 Docker 环境的选择。
+const SELF_PULL_RE = /await ([\w$]+)\(`\/images\/create\?fromImage=\$\{encodeURIComponent\([\w$]+\)\}&tag=\$\{encodeURIComponent\([\w$]+\)\}`,/g;
+let selfUpdatePatched = 0;
+for (const file of walk(path.join(buildDir, 'server'))) {
+	if (!file.endsWith('.js')) continue;
+	let s = fs.readFileSync(file, 'utf8');
+	if (!s.includes('[SelfUpdate]') || !s.includes('pulling_updater')) continue;
+	if (s.includes('/* __zhSelfUpdateMirror */')) { selfUpdatePatched++; continue; }
+	const hits = [...s.matchAll(SELF_PULL_RE)];
+	if (hits.length !== 1) {
+		console.error('错误: ' + path.relative(buildDir, file) + ' 中自更新拉取指纹命中 ' + hits.length + ' 次,预期 1 次');
+		process.exit(1);
+	}
+	const name = hits[0][1];
+	const decl = new RegExp('function ' + name.replace(/\$/g, '\\$') + '\\([\\w$]+,[\\w$]+=\\{\\}\\)\\{', 'g');
+	const declarations = [...s.matchAll(decl)];
+	const pullFunctions = [...s.matchAll(/async function ([\w$]+)\(([\w$]+),([\w$]+)\)\{/g)].filter((hit) => {
+		const body = logFunctionBody(s, hit.index);
+		return hit.index < hits[0].index && hit.index + body.length > hits[0].index;
+	});
+	if (declarations.length !== 1 || !logFunctionBody(s, declarations[0].index + declarations[0][0].length - 1).includes('process.env.DOCKER_SOCKET') ||
+		pullFunctions.length !== 1 || s.includes(name + '__zhLocalOrig')) {
+		console.error('错误: 自更新本机 streaming 请求函数结构已变化,拒绝注入');
+		process.exit(1);
+	}
+	const pull = pullFunctions[0];
+	const pullBody = logFunctionBody(s, pull.index);
+	const authCalls = [...pullBody.matchAll(new RegExp('await ([\\w$]+)\\(' + pull[2].replace(/\$/g, '\\$') + '\\)', 'g'))];
+	if (authCalls.length !== 1) {
+		console.error('错误: 自更新凭据函数指纹已变化,拒绝注入');
+		process.exit(1);
+	}
+	s = s.slice(0, pull.index) + 'async function ' + pull[1] + '(image,onProgress){return __zhSelfUpdatePull(' +
+		name + ',' + authCalls[0][1] + ',image,onProgress)}' + s.slice(pull.index + pullBody.length);
+	// 替换拉取解析器后重新定位,避免函数排列顺序变化造成偏移。
+	decl.lastIndex = 0;
+	const at = decl.exec(s).index;
+	s = s.slice(0, at) + s.slice(at).replace('function ' + name + '(', 'function ' + name + '__zhLocalOrig(');
+	// 原本机 streaming 请求也能读取 inspect/tag 等响应;不借用受环境选择影响的 dockerFetch。
+	// 独立清理 scope 防止覆盖普通 API 的 default 环境适配器。
+	s += '\n/* __zhSelfUpdateMirror */\nfunction ' + name + '(p,o={}){return __zhMirrorFetch(' +
+		name + '__zhLocalOrig,p,o,"self-update-local")}\n';
+	if (!s.includes('function __zhMirrorTable(')) s += '\n' + mirrorJs;
+	fs.writeFileSync(file, s);
+	console.log('已注入自更新镜像加速: ' + path.relative(buildDir, file));
+	selfUpdatePatched++;
+}
+if (selfUpdatePatched !== 1) {
+	console.error('错误: 自更新镜像加速命中 ' + selfUpdatePatched + ' 个文件,预期 1 个');
+	process.exit(1);
+}
+
+// ---- 4) 启动时安装更新检查加速,先于 scheduler/hook 等入口捕获全局 fetch ----
 // 仅在 dockerFetch chunk 末尾安装会依赖该 chunk 的首次加载时机。
 // 官方 server.js 直接导入 handler.js,不会经过 adapter-node 的 index.js。
 // 两个入口都先导入 runtime,确保独立的 registry 模块也经过同一包装。
@@ -145,7 +198,7 @@ for (const entryName of ['handler.js', 'index.js']) {
 	console.log('已注入更新检查启动补丁: ' + entryName);
 }
 
-// ---- 4) 日志按镜像层原地刷新;同一处理也用于复制和下载日志 ----
+// ---- 5) 日志按镜像层原地刷新;同一处理也用于复制和下载日志 ----
 const progressJs = fs.readFileSync(path.join(assetDir, 'pull-progress.template.js'), 'utf8');
 const LOG_LINES_RE = /function ([\w$]+)\(([\w$]+)\)\{return \2\.split\((?:"\\n"|'\\n'|`(?:\\n|\r?\n)`)\)\.map\(/g;
 function logFunctionBody(source, start) {
@@ -198,6 +251,31 @@ for (const file of walk(buildDir)) {
 }
 if (!clientLogPatched || !clientLogRoles.has('html') || !clientLogRoles.has('text')) {
 	console.error('错误: 客户端日志格式化器覆盖不完整(显示/复制下载),拒绝构建无法完整刷新进度的镜像');
+	process.exit(1);
+}
+
+// 自更新弹窗直接维护 step.logs 数组,不经过共享日志格式化器。
+const SELF_LOG_RE = /([\w$]+)\.logs=\[\.\.\.\1\.logs,([\w$]+)\],\1\.showLogs=(?:!0|true)/g;
+let selfLogPatched = 0;
+for (const file of walk(path.join(buildDir, 'client'))) {
+	if (!file.endsWith('.js')) continue;
+	let s = fs.readFileSync(file, 'utf8');
+	if (!s.includes('/api/self-update') || !s.includes('pulling_updater')) continue;
+	if (s.includes('/* __zhSelfUpdateLog */')) { selfLogPatched++; continue; }
+	const hits = [...s.matchAll(SELF_LOG_RE)];
+	if (hits.length !== 1) {
+		console.error('错误: 自更新日志数组指纹命中 ' + hits.length + ' 次,预期 1 次');
+		process.exit(1);
+	}
+	s = s.replace(SELF_LOG_RE, '$1.logs=__zhAppendPullLog($1,$2),$1.showLogs=!0');
+	if (!s.includes('function __zhAppendPullLog(')) s += '\n' + progressJs;
+	s += '\n/* __zhSelfUpdateLog */\n';
+	fs.writeFileSync(file, s);
+	selfLogPatched++;
+	console.log('已注入自更新日志原地刷新: ' + path.relative(buildDir, file));
+}
+if (selfLogPatched !== 1) {
+	console.error('错误: 自更新日志补丁命中 ' + selfLogPatched + ' 个客户端文件,预期 1 个');
 	process.exit(1);
 }
 
