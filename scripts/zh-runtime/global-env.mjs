@@ -49,10 +49,17 @@ export function injectGlobalEnv(buildDir, templatePath) {
   }
   const providers = [];
   for (const item of files) {
-    for (const match of item.source.matchAll(/(?:[,{])getConfigSets:([\w$]+)(?=[,}])/g)) {
+    for (const match of item.source.matchAll(/(?:[,{])\s*getConfigSets\s*:\s*([\w$]+)\s*(?=[,}])/g)) {
       const escaped = match[1].replace(/[$]/g, '\\$');
-      const exported = [...item.source.matchAll(new RegExp('(?:[,{])' + escaped + ' as ([\\w$]+)(?=[,}])', 'g'))];
-      if (exported.length === 1) providers.push({ file: item.file, key: exported[0][1] });
+      // Rollup emits spaced export lists in the official image; esbuild's
+      // compact lists used in early fixtures are not representative of those.
+      // Resolve only ESM export clauses, accepting whitespace and shorthand.
+      const binding = new RegExp('^\\s*' + escaped + '(?:\\s+as\\s+([\\w$]+))?\\s*$');
+      const exported = [...item.source.matchAll(/\bexport\s*\{([^}]*)\}/g)]
+        .flatMap(clause => clause[1].split(','))
+        .map(entry => binding.exec(entry))
+        .filter(Boolean);
+      if (exported.length === 1) providers.push({ file: item.file, key: exported[0][1] || match[1] });
     }
   }
   if (providers.length !== 1) throw new Error(`GlobalEnv: expected one Config Set DB export, found ${providers.length}`);

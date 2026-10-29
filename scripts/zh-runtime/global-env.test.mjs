@@ -108,3 +108,26 @@ test('fail builds on missing/ambiguous dispatcher and changed signatures', () =>
     assert.throws(() => injectGlobalEnv(build, templatePath));
   }
 });
+
+test('resolve official Rollup exports with spaces, newlines and shorthand, then call the real binding', async () => {
+  const cases = [
+    ['rollup', 'const ns={getConfigSets:get};export { other as a, get as bM, last as c };'],
+    ['multiline', 'const ns={ getConfigSets : get };export {\n other as a,\n get\n as\n bM,\n last as c\n};'],
+    ['shorthand', 'const ns={getConfigSets:get};export {other,get,last};'],
+    ['dollar', 'const ns={getConfigSets:$get};export {other as a, $get as $bM, last as c};']
+  ];
+  for (const [name, bindings] of cases) {
+    const build = path.join(temporary, name);
+    const server = path.join(build, 'server');
+    fs.mkdirSync(server, { recursive: true });
+    fs.writeFileSync(path.join(build, 'package.json'), '{"type":"module"}');
+    fs.writeFileSync(path.join(server, 'stacks.js'), 'async function native(op,options,compose,envVars,secretVars,onLine){console.log(`Read ${1} vars from .env file for Hawser injection`);switch(options.connectionType){case"hawser-standard":case"hawser-edge":return secretVars;default:return secretVars}}export {native};');
+    fs.writeFileSync(path.join(server, 'db.js'), 'const other=1,last=2;async function get(){return [{name:"全局变量",envVars:[{key:"TRAEFIK_DOMAIN",value:"official.test"}]}]};const $get=get;' + bindings);
+    assert.equal(injectGlobalEnv(build, templatePath).patched, true);
+    const { native } = await import(pathToFileURL(path.join(server, 'stacks.js')));
+    process.env.ZH_GLOBAL_ENV_CONFIG_SET = '全局变量';
+    const result = await native('up', { workingDir: build }, '', {}, {});
+    assert.deepEqual(result, { TRAEFIK_DOMAIN: 'official.test' }, name);
+    assert.equal(injectGlobalEnv(build, templatePath).patched, false);
+  }
+});
