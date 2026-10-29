@@ -16,6 +16,8 @@ COPY --from=official /app/build /build
 COPY scripts/zh-runtime/registry-mirror.template.js /zh/registry-mirror.template.js
 COPY scripts/zh-runtime/inject.mjs /zh/inject.mjs
 COPY scripts/zh-runtime/pull-progress.template.js /zh/pull-progress.template.js
+COPY scripts/zh-runtime/default-template.mjs scripts/zh-runtime/default-template.test.mjs /zh/
+RUN node --test /zh/default-template.test.mjs
 COPY scripts/zh-runtime/global-env.mjs scripts/zh-runtime/global-env.template.js scripts/zh-runtime/global-env.test.mjs /zh/
 RUN node --test /zh/global-env.test.mjs
 RUN node /zh/inject.mjs /build /zh

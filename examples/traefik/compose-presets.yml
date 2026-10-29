@@ -1,0 +1,24 @@
+# 共享反代标签预设；由应用的 Compose extends 引用，不单独部署。
+# 应用只设置 TRAEFIK_SUBDOMAIN、TRAEFIK_CONTAINER_PORT；引用本预设即启用反代。
+services:
+  web:
+    labels:
+      - "traefik.enable=true"
+      - "dockhand.subdomain=${TRAEFIK_SUBDOMAIN}"
+      - "dockhand.url=https://${TRAEFIK_SUBDOMAIN}.${TRAEFIK_DOMAIN}:${TRAEFIK_HTTPS_PORT}"
+      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.rule=HostRegexp(`^${TRAEFIK_SUBDOMAIN}[.](${TRAEFIK_DOMAIN_REGEX})$$`)"
+      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.entrypoints=websecure"
+      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.tls=true"
+      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.middlewares=basic-headers@file"
+      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.service=${TRAEFIK_SUBDOMAIN}-web"
+      - "traefik.http.services.${TRAEFIK_SUBDOMAIN}-web.loadbalancer.server.port=${TRAEFIK_CONTAINER_PORT}"
+  web-api:
+    extends:
+      service: web
+    labels:
+      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.rule=HostRegexp(`^${TRAEFIK_SUBDOMAIN}-api[.](${TRAEFIK_DOMAIN_REGEX})$$`)"
+      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.entrypoints=websecure"
+      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.tls=true"
+      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.middlewares=basic-headers@file"
+      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.service=${TRAEFIK_SUBDOMAIN}-api"
+      - "traefik.http.services.${TRAEFIK_SUBDOMAIN}-api.loadbalancer.server.port=${TRAEFIK_API_PORT}"

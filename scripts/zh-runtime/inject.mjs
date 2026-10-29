@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { gzipSync, brotliCompressSync } from 'node:zlib';
+import { patchDefaultTemplate } from './default-template.mjs';
 
 const [, , buildDir, assetDir] = process.argv;
 if (!buildDir || !assetDir) {
@@ -280,7 +281,9 @@ if (selfLogPatched !== 1) {
 }
 
 // 内容哈希文件不能原名覆盖:浏览器可能已永久缓存旧版本。更新所有 JS 资产名称及其引用。
-const cacheTag = createHash('sha256').update(mirrorJs + progressJs).digest('hex').slice(0, 12);
+patchDefaultTemplate(buildDir);
+const liveDefaultPatchSource = fs.readFileSync(new URL('./default-template.mjs', import.meta.url), 'utf8');
+const cacheTag = createHash('sha256').update(mirrorJs + progressJs + liveDefaultPatchSource).digest('hex').slice(0, 12);
 const clientDir = path.join(buildDir, 'client');
 const renames = [];
 const names = new Map();

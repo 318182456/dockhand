@@ -127,38 +127,45 @@ providers:
 
 ### 新建堆栈只填写前缀和端口
 
-普通单网页服务在堆栈变量中填写 `TRAEFIK_SUBDOMAIN` 和 `TRAEFIK_CONTAINER_PORT`，例如 `myapp`、`3000`，并使用以下标签。容器端口填写内部 HTTP 端口，不是宿主机映射端口。
+完整 Traefik 标签可以集中保存在一份 [共享预设](examples/traefik/compose-presets.yml) 中。把它放在堆栈公共父目录下，例如 `traefik/compose-presets.yml`，并在全局配置集中添加：
 
-```yaml
-labels:
-  - "traefik.enable=true"
-  - "dockhand.subdomain=${TRAEFIK_SUBDOMAIN:?请填写子域名前缀}"
-  - "dockhand.url=https://${TRAEFIK_SUBDOMAIN}.${TRAEFIK_DOMAIN}:${TRAEFIK_HTTPS_PORT}"
-  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.entrypoints=websecure"
-  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.tls=true"
-  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.service=${TRAEFIK_SUBDOMAIN}-web"
-  - "traefik.http.services.${TRAEFIK_SUBDOMAIN}-web.loadbalancer.server.port=${TRAEFIK_CONTAINER_PORT:?请填写容器内部端口}"
+```dotenv
+TRAEFIK_PRESET_FILE=../traefik/compose-presets.yml
 ```
 
-使用标签列表，因为 Compose 不会插值映射形式的标签键。同一 Traefik 实例中前缀应唯一。多服务、多端口和特殊 API 路由需要分别配置；SSO、代理和后端 HTTPS 按应用选择。
+每个服务只需引用预设，保留原来的镜像、代理、挂载、网络等字段：
 
-保留用户原来的 Compose 配置，只合并所需字段。例如需要代理的服务可以写 `HTTP_PROXY: "${HTTP_PROXY}"`；原有 `NO_PROXY` 等设置继续保留。全局变量不会自动全部传入容器，需要在服务配置中引用。
+```yaml
+extends:
+  file: "${TRAEFIK_PRESET_FILE}"
+  service: web
+```
+
+每个堆栈只填写两个变量，例如：
+
+```dotenv
+TRAEFIK_SUBDOMAIN=myapp
+TRAEFIK_CONTAINER_PORT=3000
+```
+
+共享预设已固定 `traefik.enable=true`，无需传开关。不需要反代的服务不引用预设。端口是容器内部 HTTP 端口，不是宿主机映射端口；同一 Traefik 实例中的前缀应唯一。已有应用的 SSO、特殊请求头等可以继续通过服务自己的标签覆盖预设。
+
+文件只保存一份，每个需要反代的服务都引用它。相对路径按该服务主 Compose 文件所在目录解析。预设及堆栈文件必须在运行 Compose CLI 的 Dockhand 容器内可读，通常把共同父目录按相同路径挂载到容器内。
 
 ### 同一个容器的网页和 API
 
-多端口应用需要分别设置 router、service、TLS 和容器端口。例如已有网页路由的 Hindsight 可以补上以下标签，API 默认使用同一前缀加 `-api`：
+Hindsight 等双端口应用改用 `service: web-api`。这份预设自动提供独立的两套 router、service、TLS 和端口：
 
-```yaml
-  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.rule=HostRegexp(`^${TRAEFIK_SUBDOMAIN}[.](${TRAEFIK_DOMAIN_REGEX})$$`)"
-  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.rule=HostRegexp(`^${TRAEFIK_SUBDOMAIN}-api[.](${TRAEFIK_DOMAIN_REGEX})$$`)"
-  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.entrypoints=websecure"
-  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.tls=true"
-  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.service=${TRAEFIK_SUBDOMAIN}-api"
-  - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.middlewares=basic-headers@file"
-  - "traefik.http.services.${TRAEFIK_SUBDOMAIN}-api.loadbalancer.server.port=${TRAEFIK_API_PORT:-8888}"
-```
+| 入口 | 子域名前缀 | 容器端口 |
+|---|---|---|
+| 网页 | `TRAEFIK_SUBDOMAIN` | `TRAEFIK_CONTAINER_PORT` |
+| API | 上述前缀加 `-api` | 默认 `8888`，可用 `TRAEFIK_API_PORT` 覆盖 |
 
-`TRAEFIK_DOMAIN_REGEX` 由本扩展在部署时从 `TRAEFIK_DOMAINS` 自动生成、去重并转义，不用在配置集中手动维护第二份域名列表。上例的 `$$` 会由 Compose 转为正则表达式的结尾锚点 `$`。更改域名列表后，除了重新部署 Traefik，也需重新部署使用这种显式标签的多路由应用。普通单路由应用可以继续使用提供器的默认规则。
+不用把整套标签重复写进每个应用。`TRAEFIK_DOMAIN_REGEX` 由 Dockhand 在部署时根据全局 `TRAEFIK_DOMAINS` 自动生成、去重并转义，不用在配置集中维护第二份域名列表。更改域名列表后，重新部署 Traefik 和引用预设的应用，使其标签读取最新值。
+
+`extends` 复用配置结构，全局变量提供域名、代理等值，两者互相配合。也可以不用本扩展，改为自行配置 Compose 读取共享 `.env`；服务里的 `env_file` 只向容器传变量，不能代替 Compose 插值变量来源。
+
+新建窗口会在打开、预览和校验时读取当前默认模板，不再始终使用页面初始化时缓存的旧值。不会覆盖正在编辑的内容或调用方显式传入的 Compose。
 
 
 ### 优先级与生效方式
