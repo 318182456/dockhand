@@ -16,7 +16,10 @@ COPY --from=official /app/build /build
 COPY scripts/zh-runtime/registry-mirror.template.js /zh/registry-mirror.template.js
 COPY scripts/zh-runtime/inject.mjs /zh/inject.mjs
 COPY scripts/zh-runtime/pull-progress.template.js /zh/pull-progress.template.js
+COPY scripts/zh-runtime/global-env.mjs scripts/zh-runtime/global-env.template.js scripts/zh-runtime/global-env.test.mjs /zh/
+RUN node --test /zh/global-env.test.mjs
 RUN node /zh/inject.mjs /build /zh
+RUN node /zh/global-env.mjs /build /zh/global-env.template.js
 
 # -----------------------------------------------------------------------------
 # 最终镜像:官方镜像原样 + 打过补丁的 build 产物(属主与上游一致 1001:1001)
