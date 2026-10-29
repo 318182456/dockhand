@@ -148,7 +148,9 @@ TRAEFIK_SUBDOMAIN=myapp
 TRAEFIK_CONTAINER_PORT=3000
 ```
 
-共享预设已固定 `traefik.enable=true`，无需传开关。不需要反代的服务不引用预设。端口是容器内部 HTTP 端口，不是宿主机映射端口；同一 Traefik 实例中的前缀应唯一。已有应用的 SSO、特殊请求头等可以继续通过服务自己的标签覆盖预设。
+共享预设已固定 `traefik.enable=true`，无需传开关。不需要反代的服务不引用预设。端口是容器内部 HTTP 端口，不是宿主机映射端口；同一 Traefik 实例中的前缀应唯一。需要 SSO 的服务改用 `service: web-sso`，认证中间件在共享预设中统一维护。qBittorrent 和 Transmission 分别使用基于它的 `web-qb`、`web-tr`，保留各自的客户端兼容请求头；容器网络选择仍保留在应用配置中。
+
+Compose 插值变量对整个项目生效，同一堆栈的多个独立服务不能通过各自的 environment 重定义插值参数。Emby、SunPanel 等多入口堆栈使用共享文件中的专用预设，每个入口保留独立的前缀和端口变量。
 
 文件只保存一份，每个需要反代的服务都引用它。相对路径按该服务主 Compose 文件所在目录解析。预设及堆栈文件必须在运行 Compose CLI 的 Dockhand 容器内可读，通常把共同父目录按相同路径挂载到容器内。
 
@@ -164,6 +166,8 @@ Hindsight 等双端口应用改用 `service: web-api`。这份预设自动提供
 不用把整套标签重复写进每个应用。`TRAEFIK_DOMAIN_REGEX` 由 Dockhand 在部署时根据全局 `TRAEFIK_DOMAINS` 自动生成、去重并转义，不用在配置集中维护第二份域名列表。更改域名列表后，重新部署 Traefik 和引用预设的应用，使其标签读取最新值。
 
 `extends` 复用配置结构，全局变量提供域名、代理等值，两者互相配合。也可以不用本扩展，改为自行配置 Compose 读取共享 `.env`；服务里的 `env_file` 只向容器传变量，不能代替 Compose 插值变量来源。
+
+Validate 的隔离校验进程也会读取所选全局配置集，并按已有堆栈目录或新堆栈的默认目录解析 extends 路径。校验不会写回应用文件；未启用全局功能时保留上游行为。
 
 新建窗口会在打开、预览和校验时读取当前默认模板，不再始终使用页面初始化时缓存的旧值。不会覆盖正在编辑的内容或调用方显式传入的 Compose。
 

@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import { test, after } from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import vm from 'node:vm';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+import { injectValidationEnv } from './validation-env.mjs';
+const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'dockhand-validation-env-'));
+const globalTemplate=new URL('./global-env.template.js',import.meta.url),template=new URL('./validation-env.template.js',import.meta.url),selection=process.env.ZH_GLOBAL_ENV_CONFIG_SET;
+after(()=>{if(selection===undefined)delete process.env.ZH_GLOBAL_ENV_CONFIG_SET;else process.env.ZH_GLOBAL_ENV_CONFIG_SET=selection;fs.rmSync(temporary,{recursive:true,force:true});});
+const yamlUrl=pathToFileURL(createRequire(import.meta.url).resolve('js-yaml')).href;
+const runtime=path.join(temporary,'runtime.mjs');
+fs.writeFileSync(runtime,fs.readFileSync(globalTemplate,'utf8')+'\n'+fs.readFileSync(template,'utf8').replace("await import('js-yaml')",'await import('+JSON.stringify(yamlUrl)+')')+'\nexport { __zhValidationEnv };');
+const {__zhValidationEnv:apply}=await import(pathToFileURL(runtime));
+const directory=path.join(temporary,'apps','demo');fs.mkdirSync(directory,{recursive:true});
+const globals={TRAEFIK_PRESET_FILE:'../traefik/compose-presets.yml',TRAEFIK_DOMAINS:'example.com,example.net',HTTP_PROXY:'http://proxy.invalid:7890'};
+const readSets=async()=>[{name:'全局变量',envVars:Object.entries(globals).map(([key,value])=>({key,value}))}];
+const compose='services:\n  app:\n    image: example/app:1\n    extends:\n      file: "'+'$'+'{TRAEFIK_PRESET_FILE}"\n      service: web-sso\n';
+const source=async()=>({composePath:path.join(directory,'compose.yaml')}),getDirectory=async()=>directory;
+test('off mode leaves native validation untouched',async()=>{delete process.env.ZH_GLOBAL_ENV_CONFIG_SET;const env={APP:'value'},fail=()=>{throw Error('unexpected read');};const r=await apply('demo',compose,{},env,fail,fail,fail);assert.equal(r.compose,compose);assert.equal(r.env,env);});
+test('existing stack resolves extends at its real directory and preserves explicit values',async()=>{process.env.ZH_GLOBAL_ENV_CONFIG_SET='全局变量';const r=await apply('demo',compose,{existing:true,environmentId:2},{HTTP_PROXY:'local'},readSets,source,getDirectory);const yaml=(await import('js-yaml')).default;assert.equal(yaml.load(r.compose).services.app.extends.file,path.resolve(directory,globals.TRAEFIK_PRESET_FILE));assert.equal(r.env.HTTP_PROXY,'local');assert.equal(r.env.TRAEFIK_DOMAIN_REGEX,'example[.]com|example[.]net');assert.equal(fs.readdirSync(directory).length,0);});
+test('new stack uses native directory without reading an existing source',async()=>{process.env.ZH_GLOBAL_ENV_CONFIG_SET='全局变量';let seen;const r=await apply('new',compose,{existing:false,environmentId:2},{},readSets,()=>{throw Error('not existing');},async(name,id)=>{seen=[name,id];return directory;});assert.deepEqual(seen,['new',2]);assert.ok(r.compose.includes('compose-presets.yml'));});
+test('invalid YAML remains available to native diagnostics',async()=>{process.env.ZH_GLOBAL_ENV_CONFIG_SET='全局变量';const r=await apply('demo','services: [',{existing:true},{},readSets,source,getDirectory);assert.equal(r.compose,'services: [');});
+test('env-file exclusions retain deployment precedence without file writes',async()=>{process.env.ZH_GLOBAL_ENV_CONFIG_SET='全局变量';const file=path.join(directory,'.env'),before='HTTP_PROXY=custom\n';fs.writeFileSync(file,before);try{const r=await apply('demo',compose,{existing:true},{HTTP_PROXY:'custom'},readSets,source,getDirectory);assert.equal(r.env.HTTP_PROXY,'custom');assert.equal(fs.readFileSync(file,'utf8'),before);}finally{fs.unlinkSync(file);}});
+test('injector threads request context into the isolated runner and is idempotent',()=>{const build=path.join(temporary,'fixture'),chunks=path.join(build,'server','chunks');fs.mkdirSync(chunks,{recursive:true});fs.writeFileSync(path.join(chunks,'db.js'),'const ns={getConfigSets:g,getStackSource:s};export { g as sets, s as source };');fs.writeFileSync(path.join(chunks,'directory.js'),'import { dir as gd } from "./core.js"; async function a(){let x;if(z)x=z;else x=await gd(a,r);return json({stackDir:x,source:"default"})}');const file=path.join(chunks,'validate.js');fs.writeFileSync(file,'const error="COMPOSE_SCHEMA_ERROR";async function run(e,n,t,o){let z;try{z=await mkdtemp(join(tmpdir(),"dockhand-validate-"));return {findings:[]}}catch{return {findings:[]}}}async function lint(e,n,t={},o,s={},r){const i=base(n,t,s),c=await run(e,n,o,r);if(c.findings.length)return c;return i}const endpoint=async({cookies:e,url:n,params:t,request:o})=>{const a={},d="demo",l="",y={},k=null,h={};const G=await lint(d,l,y,k,a.config??{},h);return G};export {endpoint as POST};');assert.equal(injectValidationEnv(build,template,globalTemplate).patched,true);const patched=fs.readFileSync(file,'utf8');assert.ok(patched.includes('existing:!!a.existing,environmentId:Number(n.searchParams.get("env"))||null'));assert.ok(patched.includes('async function run(e,n,t,o,__zhContext)'));new vm.Script(patched.replace(/export\s*\{[^}]*\};?/g,''));assert.equal(injectValidationEnv(build,template,globalTemplate).patched,false);assert.equal(fs.readFileSync(file,'utf8'),patched);});
+

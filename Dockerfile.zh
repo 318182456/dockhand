@@ -22,6 +22,10 @@ COPY scripts/zh-runtime/global-env.mjs scripts/zh-runtime/global-env.template.js
 RUN node --test /zh/global-env.test.mjs
 RUN node /zh/inject.mjs /build /zh
 RUN node /zh/global-env.mjs /build /zh/global-env.template.js
+COPY --from=official /app/node_modules/js-yaml /zh/node_modules/js-yaml
+COPY scripts/zh-runtime/validation-env.mjs scripts/zh-runtime/validation-env.template.js scripts/zh-runtime/validation-env.test.mjs /zh/
+RUN node --test /zh/validation-env.test.mjs
+RUN node /zh/validation-env.mjs /build /zh/validation-env.template.js /zh/global-env.template.js
 
 # -----------------------------------------------------------------------------
 # 最终镜像:官方镜像原样 + 打过补丁的 build 产物(属主与上游一致 1001:1001)

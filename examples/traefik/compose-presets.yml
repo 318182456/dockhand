@@ -6,7 +6,6 @@ services:
       - "traefik.enable=true"
       - "dockhand.subdomain=${TRAEFIK_SUBDOMAIN}"
       - "dockhand.url=https://${TRAEFIK_SUBDOMAIN}.${TRAEFIK_DOMAIN}:${TRAEFIK_HTTPS_PORT}"
-      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.rule=HostRegexp(`^${TRAEFIK_SUBDOMAIN}[.](${TRAEFIK_DOMAIN_REGEX})$$`)"
       - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.entrypoints=websecure"
       - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.tls=true"
       - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.middlewares=basic-headers@file"
@@ -16,9 +15,82 @@ services:
     extends:
       service: web
     labels:
+      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.rule=HostRegexp(`^${TRAEFIK_SUBDOMAIN}[.](${TRAEFIK_DOMAIN_REGEX})$`)"
       - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.rule=HostRegexp(`^${TRAEFIK_SUBDOMAIN}-api[.](${TRAEFIK_DOMAIN_REGEX})$$`)"
       - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.entrypoints=websecure"
       - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.tls=true"
       - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.middlewares=basic-headers@file"
       - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}-api.service=${TRAEFIK_SUBDOMAIN}-api"
-      - "traefik.http.services.${TRAEFIK_SUBDOMAIN}-api.loadbalancer.server.port=${TRAEFIK_API_PORT}"
+      - "traefik.http.services.${TRAEFIK_SUBDOMAIN}-api.loadbalancer.server.port=${TRAEFIK_API_PORT:-8888}"
+  web-sso:
+    extends:
+      service: web
+    labels:
+      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.middlewares=authelia@file,basic-headers@file"
+  web-qb:
+    extends:
+      service: web-sso
+    labels:
+      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.middlewares=authelia@file,qb-host@file,basic-headers@file"
+  web-tr:
+    extends:
+      service: web-sso
+    labels:
+      - "traefik.http.routers.${TRAEFIK_SUBDOMAIN}.middlewares=authelia@file,tr-browser-auth@file,basic-headers@file"
+  # emby / emby_8096：同堆栈多服务使用独立变量，避免路由重名。
+  emby-8096:
+    labels:
+      - "traefik.enable=true"
+      - "dockhand.subdomain=${TRAEFIK_EMBY_8096_SUBDOMAIN}"
+      - "dockhand.url=https://${TRAEFIK_EMBY_8096_SUBDOMAIN}.${TRAEFIK_DOMAIN}:${TRAEFIK_HTTPS_PORT}"
+      - "traefik.http.routers.${TRAEFIK_EMBY_8096_SUBDOMAIN}.entrypoints=websecure"
+      - "traefik.http.routers.${TRAEFIK_EMBY_8096_SUBDOMAIN}.tls=true"
+      - "traefik.http.routers.${TRAEFIK_EMBY_8096_SUBDOMAIN}.service=${TRAEFIK_EMBY_8096_SUBDOMAIN}-web"
+      - "traefik.http.services.${TRAEFIK_EMBY_8096_SUBDOMAIN}-web.loadbalancer.server.port=${TRAEFIK_EMBY_8096_CONTAINER_PORT}"
+      - "traefik.http.routers.${TRAEFIK_EMBY_8096_SUBDOMAIN}.middlewares=basic-headers@file"
+  # emby / emby_8097：同堆栈多服务使用独立变量，避免路由重名。
+  emby-8097:
+    labels:
+      - "traefik.enable=true"
+      - "dockhand.subdomain=${TRAEFIK_EMBY_8097_SUBDOMAIN}"
+      - "dockhand.url=https://${TRAEFIK_EMBY_8097_SUBDOMAIN}.${TRAEFIK_DOMAIN}:${TRAEFIK_HTTPS_PORT}"
+      - "traefik.http.routers.${TRAEFIK_EMBY_8097_SUBDOMAIN}.entrypoints=websecure"
+      - "traefik.http.routers.${TRAEFIK_EMBY_8097_SUBDOMAIN}.tls=true"
+      - "traefik.http.routers.${TRAEFIK_EMBY_8097_SUBDOMAIN}.service=${TRAEFIK_EMBY_8097_SUBDOMAIN}-web"
+      - "traefik.http.services.${TRAEFIK_EMBY_8097_SUBDOMAIN}-web.loadbalancer.server.port=${TRAEFIK_EMBY_8097_CONTAINER_PORT}"
+      - "traefik.http.routers.${TRAEFIK_EMBY_8097_SUBDOMAIN}.middlewares=basic-headers@file"
+  # sun-panel / sun-panel：同堆栈多服务使用独立变量，避免路由重名。
+  sun-panel:
+    labels:
+      - "traefik.enable=true"
+      - "dockhand.subdomain=${TRAEFIK_SUN_PANEL_SUBDOMAIN}"
+      - "dockhand.url=https://${TRAEFIK_SUN_PANEL_SUBDOMAIN}.${TRAEFIK_DOMAIN}:${TRAEFIK_HTTPS_PORT}"
+      - "traefik.http.routers.${TRAEFIK_SUN_PANEL_SUBDOMAIN}.entrypoints=websecure"
+      - "traefik.http.routers.${TRAEFIK_SUN_PANEL_SUBDOMAIN}.tls=true"
+      - "traefik.http.routers.${TRAEFIK_SUN_PANEL_SUBDOMAIN}.service=${TRAEFIK_SUN_PANEL_SUBDOMAIN}-web"
+      - "traefik.http.services.${TRAEFIK_SUN_PANEL_SUBDOMAIN}-web.loadbalancer.server.port=${TRAEFIK_SUN_PANEL_CONTAINER_PORT}"
+      - "traefik.http.routers.${TRAEFIK_SUN_PANEL_SUBDOMAIN}.middlewares=basic-headers@file"
+      - "traefik.docker.network=bridge"
+  # sun-panel / sun-panel-helper：同堆栈多服务使用独立变量，避免路由重名。
+  sun-panel-helper:
+    labels:
+      - "traefik.enable=true"
+      - "dockhand.subdomain=${TRAEFIK_SUN_PANEL_HELPER_SUBDOMAIN}"
+      - "dockhand.url=https://${TRAEFIK_SUN_PANEL_HELPER_SUBDOMAIN}.${TRAEFIK_DOMAIN}:${TRAEFIK_HTTPS_PORT}"
+      - "traefik.http.routers.${TRAEFIK_SUN_PANEL_HELPER_SUBDOMAIN}.entrypoints=websecure"
+      - "traefik.http.routers.${TRAEFIK_SUN_PANEL_HELPER_SUBDOMAIN}.tls=true"
+      - "traefik.http.routers.${TRAEFIK_SUN_PANEL_HELPER_SUBDOMAIN}.service=${TRAEFIK_SUN_PANEL_HELPER_SUBDOMAIN}-web"
+      - "traefik.http.services.${TRAEFIK_SUN_PANEL_HELPER_SUBDOMAIN}-web.loadbalancer.server.port=${TRAEFIK_SUN_PANEL_HELPER_CONTAINER_PORT}"
+      - "traefik.http.routers.${TRAEFIK_SUN_PANEL_HELPER_SUBDOMAIN}.middlewares=basic-headers@file"
+      - "traefik.docker.network=bridge"
+  # traefik / traefik-manager：同堆栈多服务使用独立变量，避免路由重名。
+  manager:
+    labels:
+      - "traefik.enable=true"
+      - "dockhand.subdomain=manager"
+      - "dockhand.url=https://manager.${TRAEFIK_DOMAIN}:${TRAEFIK_HTTPS_PORT}"
+      - "traefik.http.routers.traefik-manager.entrypoints=websecure"
+      - "traefik.http.routers.traefik-manager.tls=true"
+      - "traefik.http.routers.traefik-manager.middlewares=basic-headers@file"
+      - "traefik.http.routers.traefik-manager.service=traefik-manager"
+      - "traefik.http.services.traefik-manager.loadbalancer.server.port=9083"
