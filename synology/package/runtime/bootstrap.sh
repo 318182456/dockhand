@@ -69,6 +69,7 @@ case "${1:-}" in
   done
   /bin/systemctl reset-failed dockhand-native.service >/dev/null 2>&1 || true
   exec /bin/systemctl start dockhand-native.service ;;
+ update) exec /usr/local/bin/node /usr/local/libexec/dockhand-native-updater/upgrade-worker.mjs request ;;
  stop) exec /bin/systemctl stop dockhand-native.service ;;
  status) exec /bin/systemctl is-active --quiet dockhand-native.service ;;
  *) exit 64 ;;

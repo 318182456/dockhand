@@ -3,6 +3,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import {randomBytes,createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
+import {createUpdater} from './update-api.mjs';
 const sessions=new Map(),attempts=new Map(),adminCache=new Map();
 const defaults={DATA_DIR:'/volume1/docker/dockhand/data',PORT:'0',HOST:'0.0.0.0',TZ:'Asia/Shanghai'};
 export function visibleSettings(env){
@@ -56,6 +57,7 @@ async function dsmLogin(username,password){
 }
 export function createGateway(options){
  const {getSettings,saveSettings,restartChild,backendPort,getState}=options;
+ const updater=options.updater||createUpdater({getSettings});
  const requestBackend=(url,init={})=>fetch('http://127.0.0.1:'+backendPort+url,{...init,signal:AbortSignal.timeout(5000),redirect:'manual'});
  async function appAdmin(req){
   if(!req.headers.cookie)return false;
@@ -106,10 +108,23 @@ export function createGateway(options){
     }
     json(res,404,{error:'接口不存在'});return;
    }
-   if(url.pathname.startsWith('/api/self-update')){json(res,409,{error:'原生版请通过群晖套件中心更新 Dockhand'});return;}
+   if(url.pathname==='/_native/update-client.js'&&req.method==='GET'){res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'});res.end(fs.readFileSync(new URL('./update-client.js',import.meta.url)));return;}
+   if(url.pathname==='/api/self-update'||url.pathname.startsWith('/api/self-update/')){
+    if(!nativeSession(req)&&!await appAdmin(req)){json(res,401,{error:'需要管理员验证'});return;}
+    if(req.method==='GET'&&url.pathname==='/api/self-update/check'){try{json(res,200,await updater.check());}catch{json(res,200,{updateAvailable:false,error:'无法读取原生更新源或更新服务尚未初始化，请稍后重试'});}return;}
+    if(req.method==='GET'&&url.pathname==='/api/self-update/progress'){try{json(res,200,await updater.progress(url.searchParams.get('id')));}catch{json(res,404,{error:'更新任务不存在'});}return;}
+    if(req.method==='POST'&&url.pathname==='/api/self-update'){
+     const origin=req.headers.origin,site=req.headers['sec-fetch-site'];if(!origin||new URL(origin).host!==req.headers.host||!['same-origin','none',undefined].includes(site)||!String(req.headers['content-type']||'').startsWith('application/json')){json(res,403,{error:'请求来源校验失败'});return;}
+     const input=await body(req);res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-cache, no-transform','connection':'keep-alive','x-accel-buffering':'no'});res.flushHeaders();
+     const emit=(event,data)=>res.write('event: '+event+'\ndata: '+JSON.stringify(data)+'\n\n');try{await updater.start(input,emit);}catch{emit('error',{message:'原生更新启动失败，请重新检查版本或确认更新服务已安装'});}res.end();return;
+    }
+    json(res,405,{error:'不支持的原生更新请求'});return;
+   }
    if(!await proxyAllowed(req)){res.writeHead(503,{'content-type':'text/html; charset=utf-8','cache-control':'no-store'});res.end('<!doctype html><meta charset="utf-8"><p>Dockhand 正在启动或需要配置。</p><a href="/_native/settings">打开原生设置</a>');return;}
-   const upstream=http.request({host:'127.0.0.1',port:backendPort,path:req.url,method:req.method,headers:req.headers},response=>{
-    res.writeHead(response.statusCode,response.headers);response.pipe(res);
+   const upstream=http.request({host:'127.0.0.1',port:backendPort,path:req.url,method:req.method,headers:{...req.headers,...(String(req.headers.accept||'').includes('text/html')?{'accept-encoding':'identity'}:{})}},response=>{
+    if(String(response.headers['content-type']||'').includes('text/html')&&!response.headers['content-encoding']){
+     const chunks=[];let size=0;response.on('data',chunk=>{size+=chunk.length;if(size>4000000){response.destroy();res.destroy();return;}chunks.push(chunk);});response.on('end',()=>{const html=Buffer.concat(chunks).toString('utf8').replace('</head>','<script src="/_native/update-client.js"></script></head>'),headers={...response.headers};delete headers['content-length'];delete headers.etag;headers['cache-control']='no-store';res.writeHead(response.statusCode,headers);res.end(html);});
+    }else{res.writeHead(response.statusCode,response.headers);response.pipe(res);}
    });
    upstream.on('error',()=>{if(!res.headersSent)json(res,503,{error:'应用正在重新连接'});else res.destroy();});
    req.on('aborted',()=>upstream.destroy());req.pipe(upstream);

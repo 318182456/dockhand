@@ -1,0 +1,13 @@
+import fs from 'node:fs';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+export const execute=promisify(execFile);
+export const stateRoot='/var/lib/dockhand-native-updater';
+export const configFile='/etc/dockhand-native-updater.json';
+export function versionOf(info){const m=/^version="(\d+\.\d+\.\d+-\d+)"\s*$/m.exec(info);if(!m)throw Error('无法读取原生套件版本');return m[1];}
+export function compare(a,b){const pa=a.split(/[.-]/).map(Number),pb=b.split(/[.-]/).map(Number);for(let i=0;i<4;i++){if(pa[i]!==pb[i])return pa[i]>pb[i]?1:-1;}return 0;}
+export function sourceUrl(value){const u=new URL(value);if(u.protocol!=='https:'||u.username||u.password||u.search||u.hash||u.pathname!=='/')throw Error('更新源必须是 HTTPS 根地址');return u.origin;}
+export function selectPackage(catalog,source){const base=sourceUrl(source);if(!Array.isArray(catalog?.packages))throw Error('套件目录格式不正确');const packages=catalog.packages.filter(p=>p.package==='DockhandNative'&&/^\d+\.\d+\.\d+-\d+$/.test(p.version)&&Array.isArray(p.arch)&&p.arch.includes('x86_64')).sort((a,b)=>compare(b.version,a.version));const p=packages[0];if(!p||!Number.isSafeInteger(p.size)||p.size<1000000||p.size>500*1024*1024||!(/^[0-9a-f]{64}$/.test(p.sha256)))throw Error('套件大小或 SHA256 校验信息不完整');const filename='DockhandNative-x86_64-'+p.version+'.spk';const url=base+'/packages/synology-v'+p.version+'/'+filename;if(p.link!==url)throw Error('套件下载地址与可信更新源不一致');return {...p,filename,url};}
+export function proxyEnv(settings={}){const env={...process.env};for(const k of ['HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY'])if(typeof settings[k]==='string')env[k]=settings[k];return env;}
+export async function catalogFrom(source,settings={},run=execute){const {stdout}=await run('/bin/curl',['--silent','--show-error','--fail','--proto','=https','--connect-timeout','10','--max-time','40',sourceUrl(source)+'/catalog.json?arch=epyc7002&major=7&minor=4'],{env:proxyEnv(settings),timeout:45000,maxBuffer:1024*1024});return selectPackage(JSON.parse(stdout),source);}
+export function readJob(id,root=stateRoot){if(!/^native-[0-9a-f-]{36}$/.test(id))throw Error('无效更新任务');const file=root+'/jobs/'+id+'/status.json';const s=JSON.parse(fs.readFileSync(file,'utf8'));if(s.id!==id||!['running','exited'].includes(s.status))throw Error('无效更新状态');return {logs:String(s.logs||'').slice(-50000),status:s.status,...(s.status==='exited'?{exitCode:Number(s.exitCode)||0}:{}),version:s.version||''};}

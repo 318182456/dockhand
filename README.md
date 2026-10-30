@@ -109,3 +109,6 @@ GitHub 的 Gemini Compatibility Agent 在上游镜像发布工作流失败时启
 仓库 Secret GEMINI_API_KEY 保存接口密钥；变量 GEMINI_BASE_URL 指定 Gemini 原生接口根地址（例如 https://api.example.com/），GEMINI_MODEL 指定模型名，AUTO_ADAPT_ENABLED=true 启用失败自动处理。页面 Settings → Secrets and variables → Actions 可自行调整。手动运行该工作流时，smoke 模式验证真实 API 工具回合并构建当前版本，不改代码、不发布；repair 模式需填写失败的 Sync and Publish Docker 运行 ID。
 
 每个上游版本只自动尝试一个 PR。Agent 最多 16 个模型回合，每次请求至多重试两次；仅可修改 scripts/zh-runtime 中已有生产补丁，不能修改测试、工作流、原生服务权限或凭据。审核或构建失败时保留草稿 PR，不合并。网络、镜像仓库故障以及超出允许范围的上游重构仍可能需要人工处理；自动审核不是兼容性保证。
+原生版沿用 Dockhand 原有 Settings → About 的“检查更新”“立即更新”及进度弹窗，不增加第二套更新按钮。运行网关将原 self-update 接口接到 SPK 检查和安装，套件修订号也参与比较。更新包经配置的 HTTPS 套件下载入口和原网络代理获取，支持 GitHub Releases 下载加速。
+
+首次启用原生自更新时，管理员执行包内 runtime/install-updater.mjs，指定 NAS 维护账号及可信 HTTPS 更新源。它安装一个仅更新 DockhandNative 的按需宿主机服务及固定 sudo 操作；不启用开机升级，也不接受网页传入任意安装 URL。安装前核对包名、版本、大小与 SHA256，校验 PostgreSQL 备份并保留配置/密钥。备份及运行状态在 /var/lib/dockhand-native-updater，升级失败不会报告完成。数据库结构迁移后的降级仍需根据备份人工处理。

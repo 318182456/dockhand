@@ -27,7 +27,7 @@ test('native settings require admin authentication and reject cross-origin write
   const cookie=login.headers.get('set-cookie').split(';')[0];
   const cfg=await fetch(base+'/_native/api/config',{headers:{cookie}});assert.equal(cfg.status,200);assert.equal((await cfg.json()).settings.database.hasPassword,true);
   const result=await fetch(base+'/_native/api/config',{method:'POST',headers:{cookie,'x-dockhand-native':'1'},body:JSON.stringify(input)});assert.equal(result.status,200);assert.ok(saved);assert.equal(new URL(saved.DATABASE_URL).password,'fixture%40password');
-  assert.equal((await fetch(base+'/api/self-update',{method:'POST'})).status,409);
+  assert.equal((await fetch(base+'/api/self-update',{method:'POST'})).status,401);
   const anonymous=await fetch(base+'/');assert.equal(anonymous.status,503);assert.match(await anonymous.text(),/_native\/settings/);
  }finally{server.closeAllConnections();server.close();backend.closeAllConnections();backend.close();}
 });

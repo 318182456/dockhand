@@ -20,7 +20,7 @@ jobs:
         with:
           node-version: "24"
       - name: Validate native runtime and package source
-        run: node --test synology/native.test.mjs synology/source/worker.test.mjs
+        run: node --test synology/native*.test.mjs synology/source/worker.test.mjs
       - name: Check package inputs
         id: plan
         env:
