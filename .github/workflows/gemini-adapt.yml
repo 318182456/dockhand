@@ -71,6 +71,8 @@ jobs:
           path: ${{ runner.temp }}/upstream-build
           retention-days: 2
   repair:
+    outputs:
+      changed: ${{ steps.agent.outputs.changed }}
     needs: prepare
     if: needs.prepare.outputs.active == 'true'
     runs-on: ubuntu-latest
@@ -93,6 +95,7 @@ jobs:
           name: adapt-official-build
           path: .adapt-upstream
       - name: Gemini bounded file agent
+        id: agent
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_BASE_URL: ${{ vars.GEMINI_BASE_URL }}
@@ -146,7 +149,7 @@ jobs:
         run: docker build --file Dockerfile.zh --build-arg "UPSTREAM_VERSION=$UPSTREAM_VERSION" --tag dockhand-compat-check .
   review:
     needs: [prepare, repair]
-    if: needs.prepare.outputs.mode == 'repair'
+    if: needs.prepare.outputs.mode == 'repair' && needs.repair.outputs.changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -182,7 +185,7 @@ jobs:
           retention-days: 2
   publish:
     needs: [prepare, repair, validate, review]
-    if: always() && needs.prepare.outputs.mode == 'repair' && needs.repair.result == 'success'
+    if: always() && needs.prepare.outputs.mode == 'repair' && needs.repair.result == 'success' && needs.repair.outputs.changed == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
