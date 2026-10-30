@@ -101,3 +101,11 @@ sudo synopkg start DockhandNative
 GitHub 的“Build and Publish Synology”工作流生成版本化 SPK 并发布到 Releases。配置仓库变量 PACKAGE_SOURCE_URL 和专用 Secret PACKAGE_SOURCE_PUBLISH_KEY 后，会同步更新 Cloudflare 套件目录。专用凭据仅保存在平台 Secrets，不提交源码。自动检测到程序和原生打包源码均未变化时，不重复发布。
 
 套件源代码位于 synology/source，支持 DSM 版本和架构筛选、历史版本下载及 Range / HEAD。部署时自定义 Worker 域名；文档示例使用 https://nas-package.example.com。
+
+## 上游自动适配与发布
+
+GitHub 的 Gemini Compatibility Agent 在上游镜像发布工作流失败时启动。它提取失败版本的官方 build，调用 Gemini 的有限文件工具修复现有兼容补丁；另一项独立 Gemini 审核和无密钥构建任务分别检查补丁。完整镜像构建、原有回归测试和独立审核全部通过后，创建 PR、自动合并并重新触发镜像发布，成功后继续生成原生 SPK 和更新套件源。发布不会自动安装到 NAS。
+
+仓库 Secret GEMINI_API_KEY 保存接口密钥；变量 GEMINI_BASE_URL 指定 Gemini 原生接口根地址（例如 https://api.example.com/），GEMINI_MODEL 指定模型名，AUTO_ADAPT_ENABLED=true 启用失败自动处理。页面 Settings → Secrets and variables → Actions 可自行调整。手动运行该工作流时，smoke 模式验证真实 API 工具回合并构建当前版本，不改代码、不发布；repair 模式需填写失败的 Sync and Publish Docker 运行 ID。
+
+每个上游版本只自动尝试一个 PR。Agent 最多 16 个模型回合，每次请求至多重试两次；仅可修改 scripts/zh-runtime 中已有生产补丁，不能修改测试、工作流、原生服务权限或凭据。审核或构建失败时保留草稿 PR，不合并。网络、镜像仓库故障以及超出允许范围的上游重构仍可能需要人工处理；自动审核不是兼容性保证。

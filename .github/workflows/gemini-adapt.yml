@@ -1,0 +1,212 @@
+name: Gemini Compatibility Agent
+on:
+  workflow_run:
+    workflows: ["Sync and Publish Docker"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "smoke: test API/tools/build; repair: repair a failed publish run"
+        type: choice
+        options: [smoke, repair]
+        default: smoke
+      failed_run_id:
+        description: "Failed Sync and Publish Docker run ID (repair only)"
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: gemini-compatibility
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.event_name == 'workflow_dispatch' || (vars.AUTO_ADAPT_ENABLED == 'true' && github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      version: ${{ steps.plan.outputs.version }}
+      base: ${{ steps.plan.outputs.base }}
+      branch: ${{ steps.plan.outputs.branch }}
+      run: ${{ steps.plan.outputs.run }}
+      active: ${{ steps.plan.outputs.active }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - id: plan
+        name: Resolve trusted failure and prevent duplicate repairs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUEST_MODE: ${{ inputs.mode }}
+          REQUEST_RUN: ${{ inputs.failed_run_id }}
+          EVENT_RUN: ${{ github.event.workflow_run.id }}
+        run: node scripts/auto-adapt/prepare.mjs
+      - name: Extract exact official build for the agent
+        if: steps.plan.outputs.active == 'true' && steps.plan.outputs.mode == 'repair'
+        env:
+          UPSTREAM_VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          docker pull "fnsys/dockhand:$UPSTREAM_VERSION"
+          ID=$(docker create "fnsys/dockhand:$UPSTREAM_VERSION")
+          mkdir -p "$RUNNER_TEMP/upstream-build"
+          docker cp "$ID:/app/build/." "$RUNNER_TEMP/upstream-build/"
+          docker rm "$ID"
+      - uses: actions/upload-artifact@v4
+        if: steps.plan.outputs.active == 'true'
+        with:
+          name: adapt-context
+          path: ${{ runner.temp }}/adapt-context.json
+          retention-days: 2
+      - uses: actions/upload-artifact@v4
+        if: steps.plan.outputs.active == 'true' && steps.plan.outputs.mode == 'repair'
+        with:
+          name: adapt-official-build
+          path: ${{ runner.temp }}/upstream-build
+          retention-days: 2
+  repair:
+    needs: prepare
+    if: needs.prepare.outputs.active == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: adapt-context
+          path: ${{ runner.temp }}/adapt-context
+      - uses: actions/download-artifact@v4
+        if: needs.prepare.outputs.mode == 'repair'
+        with:
+          name: adapt-official-build
+          path: .adapt-upstream
+      - name: Gemini bounded file agent
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_BASE_URL: ${{ vars.GEMINI_BASE_URL }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          ADAPT_CONTEXT: ${{ runner.temp }}/adapt-context/adapt-context.json
+          ADAPT_OUT: ${{ runner.temp }}/adapt-output
+          MODE: ${{ needs.prepare.outputs.mode }}
+        run: node scripts/auto-adapt/agent.mjs "$MODE"
+      - uses: actions/upload-artifact@v4
+        if: needs.prepare.outputs.mode == 'repair'
+        with:
+          name: adapt-patch
+          path: ${{ runner.temp }}/adapt-output
+          retention-days: 2
+  validate:
+    needs: [prepare, repair]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        if: needs.prepare.outputs.mode == 'repair'
+        with:
+          name: adapt-patch
+          path: ${{ runner.temp }}/adapt-output
+      - name: Validate patch scope and apply
+        if: needs.prepare.outputs.mode == 'repair'
+        env:
+          ADAPT_PATCH: ${{ runner.temp }}/adapt-output/repair.patch
+        run: node scripts/auto-adapt/prepare.mjs apply
+      - name: Run original regression tests
+        run: node --test scripts/zh-runtime/*.test.mjs synology/native.test.mjs synology/source/worker.test.mjs scripts/auto-adapt/*.test.mjs
+      - name: Build complete overlay against exact upstream
+        env:
+          UPSTREAM_VERSION: ${{ needs.prepare.outputs.version }}
+        run: docker build --file Dockerfile.zh --build-arg "UPSTREAM_VERSION=$UPSTREAM_VERSION" --tag dockhand-compat-check .
+  review:
+    needs: [prepare, repair]
+    if: needs.prepare.outputs.mode == 'repair'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: adapt-context
+          path: ${{ runner.temp }}/adapt-context
+      - uses: actions/download-artifact@v4
+        with:
+          name: adapt-patch
+          path: ${{ runner.temp }}/adapt-output
+      - name: Independent Gemini review of original sources and proposed diff
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_BASE_URL: ${{ vars.GEMINI_BASE_URL }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          ADAPT_CONTEXT: ${{ runner.temp }}/adapt-context/adapt-context.json
+          ADAPT_PATCH: ${{ runner.temp }}/adapt-output/repair.patch
+          ADAPT_OUT: ${{ runner.temp }}/adapt-review
+        run: node scripts/auto-adapt/agent.mjs review
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: adapt-review
+          path: ${{ runner.temp }}/adapt-review/review.json
+          retention-days: 2
+  publish:
+    needs: [prepare, repair, validate, review]
+    if: always() && needs.prepare.outputs.mode == 'repair' && needs.repair.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.base }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: adapt-patch
+          path: ${{ runner.temp }}/adapt-output
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        if: needs.review.result == 'success' || needs.review.result == 'failure'
+        with:
+          name: adapt-review
+          path: ${{ runner.temp }}/adapt-review
+      - name: Create PR and merge only when build and independent review passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ADAPT_PATCH: ${{ runner.temp }}/adapt-output/repair.patch
+          ADAPT_REVIEW: ${{ runner.temp }}/adapt-review/review.json
+          ADAPT_BASE: ${{ needs.prepare.outputs.base }}
+          ADAPT_BRANCH: ${{ needs.prepare.outputs.branch }}
+          ADAPT_VERSION: ${{ needs.prepare.outputs.version }}
+          ADAPT_FAILED_RUN: ${{ needs.prepare.outputs.run }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          REVIEW_RESULT: ${{ needs.review.result }}
+        run: node scripts/auto-adapt/publish.mjs

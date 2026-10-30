@@ -10,6 +10,10 @@ on:
   schedule:
     - cron: '0 */6 * * *' # 每 6 小时检测一次上游 release
 
+concurrency:
+  group: dockhand-image-release
+  cancel-in-progress: false
+
 permissions:
   contents: write
   packages: write
