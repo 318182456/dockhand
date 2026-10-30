@@ -7,7 +7,7 @@ import http from 'node:http';
 import os from 'node:os';
 import {createGateway} from './settings.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'),configPath=process.env.DOCKHAND_NATIVE_CONFIG||'/volume1/docker/dockhand/native/runtime-env.json';
-let settings={DATA_DIR:'/volume1/docker/dockhand/data',HOME:'/volume1/docker/dockhand/native/home',HOST:'0.0.0.0',PORT:'0',TZ:'Asia/Shanghai'};
+let settings={DATA_DIR:'/volume1/docker/dockhand/data',HOME:'/volume1/docker/dockhand/native/home',HOST:'0.0.0.0',PORT:'0',TZ:'Asia/Shanghai',ZH_GLOBAL_ENV_CONFIG_SET:'全局变量'};
 try{settings={...settings,...JSON.parse(fs.readFileSync(configPath,'utf8'))};}catch{}
 const require=createRequire(path.join(root,'app','package.json')),backendPort=Number(settings.NATIVE_BACKEND_PORT||13009);
 let child,stopping=false,failures=[],missed=0,started=0,killTimer,restartTimer,requestedRestart=false,state='stopped';

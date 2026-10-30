@@ -70,17 +70,13 @@ volumes:
       # - ZH_REGISTRY_MIRRORS=docker.io=docker.m.daocloud.io|docker.1ms.run,ghcr.io=ghcr.1ms.run|ghcr.nju.edu.cn
 ```
 
-## 标准 Compose 变量
+## 页面维护全局变量
 
-本分支已移除跨项目全局变量注入、全局变量编辑面板和所选 Config Set 绑定。共享文件由 Compose 命令显式加载：
+在 Dockhand 的 Settings → Config Sets 中统一维护名为“全局变量”的配置集。原生套件默认使用该配置集；Docker 版可通过 ZH_GLOBAL_ENV_CONFIG_SET=全局变量 显式启用。
 
-```sh
-docker compose --env-file ../all/global.env --env-file .env up -d
-```
+每个堆栈继续使用原来的单个 compose.yaml，自己的 .env 仅保留应用专用项。部署、更新、校验及编辑器变量窗口读取配置集的最新值；应用自己的 .env、显式变量和密钥优先。全局值不复制进各堆栈文件。域名列表自动派生 TRAEFIK_DOMAIN_REGEX，不限制域名数量。
 
-后一个文件用于项目专用变量。服务级 env_file 不提供标签或 extends.file 的插值环境。Dockhand 图形界面的部署不会额外读取共享文件；上游 Config Sets 仍作为普通配置预设保留。
-
-镜像加速、拉取进度和默认模板的刷新修正保持独立。全局变量界面及 Compose 校验补丁已移除，校验恢复上游行为。
+已有 global.env 可一次性导入配置集，此后在页面中维护。Config Sets 的全局变量扩展与镜像代理、下载进度分别处理；授权、日志脱敏和正常的应用覆盖规则保留。仅配置集的环境变量作为默认值，网络、端口和标签继续由共享 Compose 预设管理。
 
 ## License
 
