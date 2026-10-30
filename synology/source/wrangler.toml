@@ -1,0 +1,16 @@
+name = "nas-package-source"
+main = "worker.mjs"
+compatibility_date = "2026-10-30"
+account_id = "ece7d0dafafa5ac8aa1e0f84bf161cd1"
+workers_dev = true
+
+[[routes]]
+pattern = "nas-package.wangxy.host"
+custom_domain = true
+
+[observability]
+enabled = true
+
+[[kv_namespaces]]
+binding = "PACKAGE_CATALOG"
+id = "e7f00466d1904fbc90049d7ad41911a7"

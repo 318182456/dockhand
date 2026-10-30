@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+control=/usr/local/libexec/dockhand-native-control
+case "${1:-}" in
+ start|stop|status)
+  if [ ! -x "$control" ]; then
+   echo "Native service initialization is required: run the package bootstrap script as administrator."
+   exit 1
+  fi
+  exec /bin/sudo -n "$control" "$1"
+  ;;
+ log) exit 0 ;;
+ *) exit 1 ;;
+esac

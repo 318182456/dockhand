@@ -85,3 +85,23 @@ docker compose --env-file ../all/global.env --env-file .env up -d
 ## License
 
 上游项目许可见 [LICENSE.txt](LICENSE.txt)。本仓库仅追加镜像加速补丁,不改变上游许可条款。
+
+
+## 群晖原生套件
+
+原生版在宿主机运行 Dockhand，继续使用 Container Manager 提供的 Docker 引擎。支持 DSM 7.4 的 x86_64 / broadwellnkv2；程序、固定版本 Compose 和守护程序打包到 SPK，用户数据库及凭据不进入安装包。
+
+首次安装后，由管理员执行一次引导，并选择有权管理 Docker 项目目录的 NAS 账号：
+
+```sh
+sudo /var/packages/DockhandNative/target/runtime/bootstrap.sh <NAS账号> --repair
+sudo synopkg start DockhandNative
+```
+
+首次启动自动选择空闲内网端口并保存。通过 DSM 主菜单的“Dockhand 原生设置”配置现有 PostgreSQL、访问 URL、固定端口、代理和可选 Traefik 集成。数据库密码留空保留原值；管理员可测试连接后保存。设置服务独立于数据库，在应用连接失败时仍提供恢复入口。
+
+运行配置位于 NAS 数据卷的 dockhand/native/runtime-env.json，维护账号负责读写。主菜单图标及“打开”入口使用设置的完整 URL；不使用会再次拼接 NAS 域名的 adminurl 字段。服务由宿主机管理，关闭 Dockhand 不停止其他业务容器。
+
+GitHub 的“Build and Publish Synology”工作流生成版本化 SPK 并发布到 Releases。配置仓库变量 PACKAGE_SOURCE_URL 和专用 Secret PACKAGE_SOURCE_PUBLISH_KEY 后，会同步更新 Cloudflare 套件目录。专用凭据仅保存在平台 Secrets，不提交源码。自动检测到程序和原生打包源码均未变化时，不重复发布。
+
+套件源代码位于 synology/source，支持 DSM 版本和架构筛选、历史版本下载及 Range / HEAD。部署时自定义 Worker 域名；文档示例使用 https://nas-package.example.com。

@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+if [ -x /usr/local/libexec/dockhand-native-control ]; then
+ /bin/sudo -n /usr/local/libexec/dockhand-native-control stop
+fi
+exit 0

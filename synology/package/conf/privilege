@@ -1,0 +1,7 @@
+{
+  "defaults": {
+    "run-as": "package"
+  },
+  "username": "sc-dockhand-native",
+  "groupname": "sc-dockhand-native"
+}

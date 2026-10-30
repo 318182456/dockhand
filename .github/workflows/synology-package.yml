@@ -1,0 +1,63 @@
+name: Build and Publish Synology
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Sync and Publish Docker"]
+    types: [completed]
+permissions:
+  contents: write
+  packages: read
+concurrency:
+  group: synology-native-release
+  cancel-in-progress: false
+jobs:
+  package:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Validate native runtime and package source
+        run: node --test synology/native.test.mjs synology/source/worker.test.mjs
+      - name: Check package inputs
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          docker pull ghcr.io/318182456/dockhand:latest
+          IMAGE=$(docker image inspect ghcr.io/318182456/dockhand:latest --format '{{index .RepoDigests 0}}')
+          SOURCE=$(git ls-tree -r HEAD synology/package synology/build-spk.mjs synology/from-image.sh synology/compose-version.json | sha256sum | cut -d' ' -f1)
+          IDENTITY="$IMAGE|$SOURCE"
+          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/native-prev"
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern synology-manifest.json --dir "$RUNNER_TEMP/native-prev" 2>/dev/null || true
+          PREVIOUS=$(node -e "try{process.stdout.write(JSON.parse(require('fs').readFileSync('$RUNNER_TEMP/native-prev/synology-manifest.json')).sourceIdentity||'')}catch{}")
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] || [ "$PREVIOUS" != "$IDENTITY" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Build native package
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BUILD=$((GITHUB_RUN_NUMBER + 1))
+          sh synology/from-image.sh ghcr.io/318182456/dockhand:latest "$BUILD" "$RUNNER_TEMP/native-spk"
+      - name: Record package inputs
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          SOURCE_IDENTITY: ${{ steps.plan.outputs.identity }}
+        run: |
+          node -e "const fs=require('fs'),p='$RUNNER_TEMP/native-spk/synology-manifest.json',j=JSON.parse(fs.readFileSync(p));j.sourceIdentity=process.env.SOURCE_IDENTITY;fs.writeFileSync(p,JSON.stringify(j,null,2))"
+      - name: Publish release
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=$(node -p "JSON.parse(require('fs').readFileSync('$RUNNER_TEMP/native-spk/synology-manifest.json')).packages[0].tag")
+          gh release create "$TAG" "$RUNNER_TEMP/native-spk/"* --target "$GITHUB_SHA" --title "Dockhand Native ${TAG#synology-v}" --notes "Native Synology package with registry mirrors, pull progress and independent database settings. Requires DSM 7.4 x86_64 and Container Manager. Initial host service setup is required."
+      - name: Update package source catalog
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          PACKAGE_SOURCE_URL: ${{ vars.PACKAGE_SOURCE_URL }}
+          PACKAGE_SOURCE_PUBLISH_KEY: ${{ secrets.PACKAGE_SOURCE_PUBLISH_KEY }}
+        run: node synology/publish-source.mjs "$RUNNER_TEMP/native-spk/synology-manifest.json"
