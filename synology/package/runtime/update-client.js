@@ -3,7 +3,7 @@
  const original=globalThis.fetch.bind(globalThis);
  // Keep the existing update dialog in its progress phase while the package replaces its own gateway.
  globalThis.fetch=async(input,init)=>{let u;try{u=new URL(typeof input==='string'?input:input.url,location.href);}catch{return original(input,init);}if(u.origin!==location.origin||u.pathname!=='/api/self-update/progress'||!/^native-[0-9a-f-]{36}$/.test(u.searchParams.get('id')||''))return original(input,init);
-  const end=Date.now()+15*60*1000;while(Date.now()<end){try{const r=await original(u.href,{...init,signal:AbortSignal.timeout(5000)});if(r.ok)return r;if(![401,502,503,504].includes(r.status))return r;}catch{}await new Promise(resolve=>setTimeout(resolve,2000));}
+  const end=Date.now()+15*60*1000;while(Date.now()<end){try{const r=await original(u.href,{...init,signal:AbortSignal.timeout(5000)});if(r.ok)return r;if(![401,502,503,504].includes(r.status))return new Response(JSON.stringify({status:'exited',exitCode:1,logs:'更新进度读取失败：HTTP '+r.status}),{headers:{'content-type':'application/json'}});}catch{}await new Promise(resolve=>setTimeout(resolve,2000));}
   return new Response(JSON.stringify({status:'exited',exitCode:1,logs:'原生更新连接超时，请在群晖套件中心检查 DockhandNative 状态。'}),{headers:{'content-type':'application/json'}});
  };
  const labels=new Map([

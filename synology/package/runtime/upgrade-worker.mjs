@@ -3,13 +3,13 @@ import path from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {catalogFrom,compare,versionOf,sourceUrl,proxyEnv,execute,stateRoot,configFile} from './update-core.mjs';
+import {catalogFrom,compare,versionOf,sourceUrl,proxyEnv,execute,stateRoot,configFile,writeJob,downloadRanges} from './update-core.mjs';
 const service='dockhand-native-upgrade.service';
 function trusted(file){const s=fs.lstatSync(file);if(!s.isFile()||s.isSymbolicLink()||s.uid!==0||(s.mode&0o022))throw Error('更新服务配置权限不正确');return JSON.parse(fs.readFileSync(file,'utf8'));}
 const config=process.getuid?.()===0?trusted(configFile):null;
 if(!config)throw Error('更新服务需要管理员权限');sourceUrl(config.source);
 const settings=()=>JSON.parse(fs.readFileSync(config.runtimeConfig,'utf8'));
-function save(job){const dir=stateRoot+'/jobs/'+job.id;fs.mkdirSync(dir,{recursive:true,mode:0o750});fs.chownSync(dir,0,config.gid);const dest=dir+'/status.json',temp=dest+'.tmp';fs.writeFileSync(temp,JSON.stringify(job),{mode:0o640});fs.chownSync(temp,0,config.gid);fs.renameSync(temp,dest);}
+function save(job){writeJob(job,stateRoot,config.gid);}
 async function request(){
  const lock=stateRoot+'/request.lock';fs.mkdirSync(lock,{mode:0o700});try{
   const active=await execute('/bin/systemctl',['is-active',service]).then(r=>r.stdout.trim(),e=>String(e.stdout||'').trim());
@@ -27,7 +27,9 @@ async function pgBackup(env,destination){
 async function run(){const id=fs.readFileSync(stateRoot+'/current','utf8').trim();if(!/^native-[0-9a-f-]{36}$/.test(id))throw Error('无效更新任务');const dir=stateRoot+'/jobs/'+id,job=JSON.parse(fs.readFileSync(dir+'/status.json','utf8'));const log=text=>{job.logs=(job.logs+text+'\n').slice(-50000);save(job);};let installStarted=false;
  try{
   const env=settings(),before=versionOf(fs.readFileSync('/var/packages/DockhandNative/INFO','utf8')),pkg=await catalogFrom(config.source,env);job.version=pkg.version;save(job);if(compare(pkg.version,before)<=0)throw Error('套件源没有更新版本');
-  log('Stopping container — 下载并校验原生套件 '+pkg.version);const stage=dir+'/package.spk';await execute('/bin/curl',['--silent','--show-error','--location','--fail','--proto','=https','--proto-redir','=https','--connect-timeout','15','--max-time','600','--retry','2','--retry-delay','3','--output',stage,pkg.url],{env:proxyEnv(env),timeout:650000,maxBuffer:4096});
+  log('Stopping container — 下载并校验原生套件 '+pkg.version);const stage=dir+'/package.spk';const ranges=downloadRanges(pkg.size),parts=[];let cursor=0,completed=0;
+  async function download(){while(cursor<ranges.length){const index=cursor++,r=ranges[index],file=dir+'/part-'+index;const result=await execute('/bin/curl',['--silent','--show-error','--location','--fail','--proto','=https','--proto-redir','=https','--connect-timeout','15','--max-time','150','--retry','2','--retry-delay','2','--range',r.start+'-'+r.end,'--max-filesize',String(r.end-r.start+1),'--write-out','%{http_code}','--output',file,pkg.url],{env:proxyEnv(env),timeout:470000,maxBuffer:4096});if(result.stdout.trim()!=='206'||fs.statSync(file).size!==r.end-r.start+1)throw Error('下载源未正确返回分段数据');parts[index]=file;completed++;if(completed%4===0||completed===ranges.length)log('套件下载进度 '+completed+'/'+ranges.length+' 段');}}
+  await Promise.all(Array.from({length:Math.min(4,ranges.length)},()=>download()));const fd=fs.openSync(stage,'wx',0o600);try{for(const file of parts)fs.writeFileSync(fd,fs.readFileSync(file));}finally{fs.closeSync(fd);}for(const file of parts)fs.unlinkSync(file);
   if(fs.statSync(stage).size!==pkg.size)throw Error('套件大小校验失败');const hash=createHash('sha256');for await(const chunk of fs.createReadStream(stage))hash.update(chunk);if(hash.digest('hex')!==pkg.sha256)throw Error('套件 SHA256 校验失败');
   const info=(await execute('/bin/tar',['-xOf',stage,'INFO'],{timeout:10000,maxBuffer:65536})).stdout;if(!/^package="DockhandNative"\s*$/m.test(info)||versionOf(info)!==pkg.version)throw Error('安装包名称或版本不匹配');log('Container stopped — 套件校验完成');
   log('Removing old container — 备份 PostgreSQL、运行配置和密钥');const backup=stateRoot+'/backups/'+id;fs.mkdirSync(backup,{recursive:true,mode:0o700});await pgBackup(env,backup+'/postgres.dump');
