@@ -5,9 +5,11 @@ function syncDesktopLinks(env){
  if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw Error('Invalid application URL');
  const target=fs.realpathSync(pkg+'/target'),ui=fs.realpathSync(target+'/ui');
  if(!ui.startsWith(target+'/'))throw Error('Unexpected UI directory');
- const destination=ui+'/launch-target.json';
+ const destination=ui+'/config';
  if(fs.lstatSync(destination).isSymbolicLink())throw Error('Unexpected launcher symlink');
- fs.writeFileSync(destination,JSON.stringify({url:url.href})+'\n');
+ const config=JSON.parse(fs.readFileSync(destination,'utf8'));
+ config.launchTarget={url:url.href};
+ fs.writeFileSync(destination,JSON.stringify(config)+'\n');
  publishTraefik(env);
 }
 module.exports={syncDesktopLinks};

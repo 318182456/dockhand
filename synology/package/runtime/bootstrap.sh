@@ -62,7 +62,7 @@ case "${1:-}" in
  start)
   owner=$(sed -n 's/^User=//p' /etc/systemd/system/dockhand-native.service)
   group=$(sed -n 's/^Group=//p' /etc/systemd/system/dockhand-native.service)
-  for metadata in /var/packages/DockhandNative/target/ui/launch-target.json; do
+  for metadata in /var/packages/DockhandNative/target/ui/config; do
    [ ! -L "$metadata" ] || exit 1
    chown "$owner:$group" "$metadata"
    chmod 644 "$metadata"
