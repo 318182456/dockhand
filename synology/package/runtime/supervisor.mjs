@@ -9,6 +9,7 @@ import {createGateway} from './settings.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'),configPath=process.env.DOCKHAND_NATIVE_CONFIG||'/volume1/docker/dockhand/native/runtime-env.json';
 let settings={DATA_DIR:'/volume1/docker/dockhand/data',HOME:'/volume1/docker/dockhand/native/home',HOST:'0.0.0.0',PORT:'0',TZ:'Asia/Shanghai',ZH_GLOBAL_ENV_CONFIG_SET:'全局变量'};
 try{settings={...settings,...JSON.parse(fs.readFileSync(configPath,'utf8'))};}catch{}
+delete settings.DOCKHAND_NATIVE_GLOBAL_ENV_FILE;
 const require=createRequire(path.join(root,'app','package.json')),backendPort=Number(settings.NATIVE_BACKEND_PORT||13009);
 let child,stopping=false,failures=[],missed=0,started=0,killTimer,restartTimer,requestedRestart=false,state='stopped';
 function launch(){
@@ -68,13 +69,31 @@ function endpointReady(){
  saveSettings(accessUrl({...settings}),false);
  console.log('Dockhand native gateway ready');
 }
+let linkRefresh=Promise.resolve();
+function refreshNativeLinks(next){
+ linkRefresh=linkRefresh.catch(()=>{}).then(async()=>{
+  let globals=null,sql;
+  try{
+   const name=next.ZH_GLOBAL_ENV_CONFIG_SET||'全局变量';
+   if(name==='off')globals={};else{
+    const {default:postgres}=await import(pathToFileURL(require.resolve('postgres')));
+    sql=postgres(next.DATABASE_URL,{max:1,connect_timeout:5,idle_timeout:1});
+    const rows=await sql.unsafe('SELECT env_vars FROM config_sets WHERE name=$1',[name]);
+    let vars=rows[0]?.env_vars||[];if(typeof vars==='string')vars=JSON.parse(vars);
+    globals={};for(const item of vars)if(['TRAEFIK_DOMAINS','TRAEFIK_DOMAIN'].includes(item.key))globals[item.key]=String(item.value||'');
+   }
+  }catch{console.error('Native domain routes keep their previous values until global settings are available');}finally{if(sql)await sql.end({timeout:2}).catch(()=>{});}
+  try{require(path.join(root,'runtime','update-links.cjs')).syncDesktopLinks(next,globals);}catch{console.error('Native desktop links need synchronization');}
+ });
+}
+setInterval(()=>refreshNativeLinks({...settings}),60000).unref();
 function saveSettings(next,backup=true){
  accessUrl(next);
  const parent=path.dirname(configPath);fs.mkdirSync(parent,{recursive:true,mode:0o700});
  if(backup&&fs.existsSync(configPath))fs.copyFileSync(configPath,configPath+'.previous');
  fs.writeFileSync(configPath+'.new',JSON.stringify(next,null,2)+'\n',{mode:0o600});
  fs.renameSync(configPath+'.new',configPath);
- try{require(path.join(root,'runtime','update-links.cjs')).syncDesktopLinks(next);}catch{console.error('Native desktop links need synchronization');}if(fs.existsSync(configPath+'.previous'))fs.chmodSync(configPath+'.previous',0o600);
+ refreshNativeLinks({...next});if(fs.existsSync(configPath+'.previous'))fs.chmodSync(configPath+'.previous',0o600);
  const oldPort=settings.PORT,oldHost=settings.HOST;settings=next;
  if(oldPort!==next.PORT||oldHost!==next.HOST)setTimeout(()=>{gateway.closeAllConnections();gateway.close(()=>gateway.listen(Number(settings.PORT),settings.HOST||'0.0.0.0',endpointReady));},500);
 }

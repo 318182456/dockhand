@@ -9,10 +9,10 @@ const defaults={DATA_DIR:'/volume1/docker/dockhand/data',PORT:'0',HOST:'0.0.0.0'
 export function visibleSettings(env){
  let database={type:'postgres',host:'127.0.0.1',port:5432,database:'dockhand',username:'',hasPassword:false,sslmode:'disable'};
  if(env.DATABASE_URL){const u=new URL(env.DATABASE_URL);database={type:'postgres',host:u.hostname.replace(/^\[|\]$/g,''),port:Number(u.port||5432),database:decodeURIComponent(u.pathname.slice(1)),username:decodeURIComponent(u.username),hasPassword:!!u.password,sslmode:u.searchParams.get('sslmode')||'disable'};}
- return {traefik:{enabled:!!env.DOCKHAND_NATIVE_TRAEFIK_ENABLED,file:env.DOCKHAND_NATIVE_TRAEFIK_FILE||"",host:env.DOCKHAND_NATIVE_TRAEFIK_BACKEND_HOST||"127.0.0.1",globalEnvFile:env.DOCKHAND_NATIVE_GLOBAL_ENV_FILE||""},publicUrl:env.DOCKHAND_NATIVE_PUBLIC_URL||"",database,dataDir:env.DATA_DIR||defaults.DATA_DIR,port:Number(env.PORT||0),tz:env.TZ||defaults.TZ,httpProxy:env.HTTP_PROXY||'',httpsProxy:env.HTTPS_PROXY||'',allProxy:env.ALL_PROXY||'',noProxy:env.NO_PROXY||''};
+ return {traefik:{enabled:!!env.DOCKHAND_NATIVE_TRAEFIK_ENABLED,file:env.DOCKHAND_NATIVE_TRAEFIK_FILE||"",host:env.DOCKHAND_NATIVE_TRAEFIK_BACKEND_HOST||"127.0.0.1"},publicUrl:env.DOCKHAND_NATIVE_PUBLIC_URL||"",database,dataDir:env.DATA_DIR||defaults.DATA_DIR,port:Number(env.PORT||0),tz:env.TZ||defaults.TZ,httpProxy:env.HTTP_PROXY||'',httpsProxy:env.HTTPS_PROXY||'',allProxy:env.ALL_PROXY||'',noProxy:env.NO_PROXY||''};
 }
 export function mergeSettings(previous,input){
- const env={...previous},db=input.database;
+ const env={...previous},db=input.database;delete env.DOCKHAND_NATIVE_GLOBAL_ENV_FILE;
  if(input.traefik){
   const t=input.traefik;env.DOCKHAND_NATIVE_TRAEFIK_ENABLED=!!t.enabled;
   if(t.enabled&&(!/^\/volume[0-9]+\//.test(String(t.file))||!/[.]ya?ml$/.test(String(t.file))))throw Error('请填写数据卷中动态配置文件的完整路径');
@@ -20,7 +20,6 @@ export function mergeSettings(previous,input){
   const host=String(t.host||'127.0.0.1'),u=new URL('http://'+(host.includes(':')&&!host.startsWith('[')?'['+host+']':host));
   if(u.username||u.password||u.port||u.pathname!=='/'||u.search||u.hash)throw Error('后端主机只填写 IP 或主机名');
   env.DOCKHAND_NATIVE_TRAEFIK_BACKEND_HOST=u.hostname.replace(/^\[|\]$/g,'');
-  env.DOCKHAND_NATIVE_GLOBAL_ENV_FILE=String(t.globalEnvFile||'');
  }
  if(input.publicUrl!==undefined){
   if(input.publicUrl!==previous.DOCKHAND_NATIVE_PUBLIC_URL)env.DOCKHAND_NATIVE_URL_TRACK_PORT=!input.publicUrl;

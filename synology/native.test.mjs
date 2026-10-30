@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -31,3 +32,5 @@ test('native settings require admin authentication and reject cross-origin write
   const anonymous=await fetch(base+'/');assert.equal(anonymous.status,503);assert.match(await anonymous.text(),/_native\/settings/);
  }finally{server.closeAllConnections();server.close();backend.closeAllConnections();backend.close();}
 });
+
+test('removed shared domain field leaves a valid settings form and cleans legacy config',()=>{const html=fs.readFileSync(new URL('./package/runtime/settings.html',import.meta.url),'utf8');assert.equal(html.includes('globalEnvFile'),false);assert.equal(html.includes('共享域名变量文件'),false);const merged=mergeSettings({...previous,DOCKHAND_NATIVE_GLOBAL_ENV_FILE:'/fixture/old.env'},input);assert.equal('DOCKHAND_NATIVE_GLOBAL_ENV_FILE' in merged,false);});
