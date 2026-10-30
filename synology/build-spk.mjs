@@ -29,7 +29,7 @@ try{
  const ui=path.join(payload,'ui');fs.cpSync(path.join(here,'package','ui'),ui,{recursive:true});fs.mkdirSync(path.join(ui,'images'),{recursive:true});
  for(const size of [16,24,32,48,64,72,128,256])fs.copyFileSync(icon,path.join(ui,'images','dockhand-v2_'+size+'.png'));
  const entry=(title,url)=>({type:'url',allUsers:false,title,desc:title,icon:'images/dockhand-v2_{0}.png',url});
- fs.writeFileSync(path.join(ui,'config'),JSON.stringify({'.url':{'SYNO.SDS.DockhandNative.Application':entry('Dockhand','3rdparty/DockhandNative/open.html'),'SYNO.SDS.DockhandNative.Settings':entry('Dockhand 原生设置','3rdparty/DockhandNative/open.html?settings=1')}},null,2));
+ fs.writeFileSync(path.join(ui,'config'),JSON.stringify({'.url':{'SYNO.SDS.DockhandNative.Application':entry('Dockhand','webman/3rdparty/DockhandNative/open.html'),'SYNO.SDS.DockhandNative.Settings':entry('Dockhand 原生设置','webman/3rdparty/DockhandNative/open.html?settings=1')}},null,2));
  fs.cpSync(path.join(here,'package','conf'),path.join(outer,'conf'),{recursive:true});
  fs.cpSync(path.join(here,'package','scripts'),path.join(outer,'scripts'),{recursive:true});
  for(const file of fs.readdirSync(path.join(outer,'scripts')))fs.chmodSync(path.join(outer,'scripts',file),0o755);
