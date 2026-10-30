@@ -5,21 +5,12 @@ function syncDesktopLinks(env){
  if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw Error('Invalid application URL');
  const target=fs.realpathSync(pkg+'/target'),ui=fs.realpathSync(target+'/ui');
  if(!ui.startsWith(target+'/'))throw Error('Unexpected UI directory');
- const configPath=ui+'/config';
- if(fs.lstatSync(configPath).isSymbolicLink()||fs.lstatSync(pkg+'/INFO').isSymbolicLink())throw Error('Unexpected metadata symlink');
- const config=JSON.parse(fs.readFileSync(configPath,'utf8'));
- for(const[id,endpoint]of [['SYNO.SDS.DockhandNative.Application',url.href],['SYNO.SDS.DockhandNative.Settings',new URL('/_native/settings',url).href]]){
-  const entry=config['.url']?.[id];if(!entry)throw Error('Missing native desktop entry');
-  entry.type='url';entry.url=endpoint;entry.icon='images/dockhand-v2_{0}.png';delete entry.port;delete entry.protocol;
- }
- fs.writeFileSync(configPath,JSON.stringify(config,null,2)+'\n');
- const infoPath=pkg+'/INFO';let info=fs.readFileSync(infoPath,'utf8'),line='adminurl='+JSON.stringify(url.href);
- info=info.replace(/^adminport=.*\n?/gm,'').replace(/^adminprotocol=.*\n?/gm,'').replace(/^adminurl=.*\n?/gm,'');
-
- fs.writeFileSync(infoPath,info);publishTraefik(env);
+ const destination=ui+'/launch-target.json';
+ if(fs.lstatSync(destination).isSymbolicLink())throw Error('Unexpected launcher symlink');
+ fs.writeFileSync(destination,JSON.stringify({url:url.href})+'\n');
+ publishTraefik(env);
 }
 module.exports={syncDesktopLinks};
-
 function publishTraefik(env){
  const file=env.DOCKHAND_NATIVE_TRAEFIK_FILE;
  if(!env.DOCKHAND_NATIVE_TRAEFIK_ENABLED||!file||!env.DOCKHAND_NATIVE_PUBLIC_URL)return;

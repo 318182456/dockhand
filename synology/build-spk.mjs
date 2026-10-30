@@ -26,10 +26,10 @@ try{
  for(const name of ['node','bin/docker-compose','bootstrap.sh'])fs.chmodSync(path.join(payload,'runtime',name),0o755);
  const icon=path.join(app,'build','client','android-chrome-512x512.png');
  fs.copyFileSync(icon,path.join(outer,'PACKAGE_ICON.PNG'));fs.copyFileSync(icon,path.join(outer,'PACKAGE_ICON_256.PNG'));
- const ui=path.join(payload,'ui');fs.mkdirSync(path.join(ui,'images'),{recursive:true});
+ const ui=path.join(payload,'ui');fs.cpSync(path.join(here,'package','ui'),ui,{recursive:true});fs.mkdirSync(path.join(ui,'images'),{recursive:true});
  for(const size of [16,24,32,48,64,72,128,256])fs.copyFileSync(icon,path.join(ui,'images','dockhand-v2_'+size+'.png'));
- const entry=(title,url)=>({type:'url',allUsers:false,title,desc:title,icon:'images/dockhand-v2_{0}.png',protocol:'http',port:3009,url});
- fs.writeFileSync(path.join(ui,'config'),JSON.stringify({'.url':{'SYNO.SDS.DockhandNative.Application':entry('Dockhand','/'),'SYNO.SDS.DockhandNative.Settings':entry('Dockhand 原生设置','/_native/settings')}},null,2));
+ const entry=(title,url)=>({type:'url',allUsers:false,title,desc:title,icon:'images/dockhand-v2_{0}.png',url});
+ fs.writeFileSync(path.join(ui,'config'),JSON.stringify({'.url':{'SYNO.SDS.DockhandNative.Application':entry('Dockhand','3rdparty/DockhandNative/open.html'),'SYNO.SDS.DockhandNative.Settings':entry('Dockhand 原生设置','3rdparty/DockhandNative/open.html?settings=1')}},null,2));
  fs.cpSync(path.join(here,'package','conf'),path.join(outer,'conf'),{recursive:true});
  fs.cpSync(path.join(here,'package','scripts'),path.join(outer,'scripts'),{recursive:true});
  for(const file of fs.readdirSync(path.join(outer,'scripts')))fs.chmodSync(path.join(outer,'scripts',file),0o755);
