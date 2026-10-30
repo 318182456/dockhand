@@ -30,13 +30,13 @@ function relative(from, to) {
   let value = path.relative(path.dirname(from), to).split(path.sep).join('/');
   return value.startsWith('.') ? value : './' + value;
 }
-export function injectValidationEnv(buildDir, templatePath, globalTemplatePath) {
+export function injectValidationEnv(buildDir, templatePath) {
   const items = [...walk(path.join(buildDir, 'server'))].map(file => ({ file, source: fs.readFileSync(file, 'utf8') }));
   const targets = items.filter(x => x.source.includes('"dockhand-validate-"') && x.source.includes('COMPOSE_SCHEMA_ERROR'));
   if (targets.length !== 1) throw Error('ValidationEnv: expected one isolated validator');
   const target = targets[0];
   if (target.source.includes('/* __zhValidationEnv */')) return { patched: false, file: target.file };
-  const sets = dbExport(items, 'getConfigSets'), stack = dbExport(items, 'getStackSource');
+  const stack = dbExport(items, 'getStackSource');
   const directories = [];
   for (const item of items.filter(x => x.source.includes('source:"default"') && x.source.includes('stackDir:'))) {
     const getter = /else\s+[\w$]+\s*=\s*await\s+([\w$]+)\([^)]*\);return json\(\{stackDir:/.exec(item.source)?.[1];
@@ -60,7 +60,7 @@ export function injectValidationEnv(buildDir, templatePath, globalTemplatePath) 
   const [, runner, name, compose, dockerHost, env] = matches[0];
   const header = 'async function ' + runner + '(' + [name, compose, dockerHost, env].join(',') + '){';
   source = source.replace(header, () => 'async function ' + runner + '(' + [name, compose, dockerHost, env, '__zhContext'].join(',') + '){' +
-    'const __zhv=await __zhValidationEnv(' + [name, compose, '__zhContext', env, load(sets), load(stack), load(directory)].join(',') + ');' +
+    'const __zhv=await __zhValidationEnv(' + [name, compose, '__zhContext', env, load(stack), load(directory)].join(',') + ');' +
     compose + '=__zhv.compose;' + env + '=__zhv.env;/* __zhValidationEnv */');
   const escape = value => value.replace(/[$]/g, '\\$');
   const callers = [...source.matchAll(new RegExp('async function ([\\w$]+)\\(([^()]*)\\)\\{const ([\\w$]+)=([\\w$]+)\\([^;]*?\\),([\\w$]+)=await ' + escape(runner) + '\\(([^()]*)\\);if\\(', 'g'))];
@@ -77,33 +77,13 @@ export function injectValidationEnv(buildDir, templatePath, globalTemplatePath) 
   if (args.length !== 6 || !body || !url) throw Error('ValidationEnv: request context shape changed');
   source = source.replace(callsites[0][0], () => callsites[0][0].slice(0, -1) +
     ',{existing:!!' + body + '.existing,environmentId:Number(' + url + '.searchParams.get("env"))||null})');
-  source += '\n' + fs.readFileSync(globalTemplatePath, 'utf8') + '\n' + fs.readFileSync(templatePath, 'utf8');
-  fs.writeFileSync(target.file, source);
-  return { patched: true, file: target.file };
-}
-
-export function injectEnvMarkers(buildDir, templatePath, globalTemplatePath) {
-  const items = [...walk(path.join(buildDir, 'server'))].map(file => ({ file, source: fs.readFileSync(file, 'utf8') }));
-  const targets = items.filter(item => item.source.includes('Error validating stack env vars:'));
-  if (targets.length !== 1) throw Error('ValidationEnv: expected one env-marker endpoint');
-  const target = targets[0];
-  if (target.source.includes('/* __zhGlobalEnvMarkers */')) return { patched: false, file: target.file };
-  const provider = dbExport(items, 'getConfigSets');
-  const returns = [...target.source.matchAll(/([\w$]+)=\{valid:[\w$]+\.length===0,required:[\w$]+,optional:[\w$]+,defined:[\w$]+,missing:[\w$]+,unused:[\w$]+\};return json\(\1\)/g)];
-  if (returns.length !== 1) throw Error('ValidationEnv: env-marker result shape changed');
-  const match = returns[0];
-  const call = 'async()=>{const m=await import(' + JSON.stringify(relative(target.file, provider.file)) + ');return m[' + JSON.stringify(provider.key) + ']();}';
-  const source = target.source.replace('return json(' + match[1] + ')', () =>
-    'return json(await __zhGlobalEnvMarkers(' + match[1] + ',' + call + '))/* __zhGlobalEnvMarkers */') +
-    '\n' + fs.readFileSync(globalTemplatePath, 'utf8') + '\n' + fs.readFileSync(templatePath, 'utf8');
+  source += '\n' + fs.readFileSync(templatePath, 'utf8');
   fs.writeFileSync(target.file, source);
   return { patched: true, file: target.file };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [, , build, template, globalTemplate] = process.argv;
-  const result = injectValidationEnv(build, template, globalTemplate);
-  const markers = injectEnvMarkers(build, template, globalTemplate);
-  console.log('全局变量编辑器提示补丁: ' + path.relative(build, markers.file) + ' (' + (markers.patched ? '已注入' : '已存在') + ')');
-  console.log('全局变量校验补丁: ' + path.relative(build, result.file) + ' (' + (result.patched ? '已注入' : '已存在') + ')');
+  const [, , build, template] = process.argv;
+  const result = injectValidationEnv(build, template);
+  console.log('Compose 校验相对路径补丁: ' + path.relative(build, result.file) + ' (' + (result.patched ? '已注入' : '已存在') + ')');
 }

@@ -1,16 +1,11 @@
 // Validation uses its own temporary Compose runner, outside the deploy dispatcher.
-async function __zhValidationEnv(name, compose, context, env, getSets, getSource, getDirectory) {
-  const selected = (process.env.ZH_GLOBAL_ENV_FILE || process.env.ZH_GLOBAL_ENV_CONFIG_SET || '').trim();
-  if (!selected || selected === 'off') return { compose, env };
+async function __zhValidationEnv(name, compose, context, env, getSource, getDirectory) {
   const path = await import('node:path');
   const source = context?.existing ? await getSource(name, context.environmentId ?? null) : null;
   const directory = source?.composePath
     ? path.dirname(source.composePath)
     : await getDirectory(name, context?.environmentId ?? undefined);
-  const defaults = await __zhGlobalEnv({
-    workingDir: directory, composePath: source?.composePath, envPath: source?.envPath
-  }, env, {}, getSets);
-  const merged = { ...defaults, ...(env || {}) };
+  const merged = env || {};
   // Keep the upstream validator's isolated env_file stubs. Resolve only extends
   // paths against the real stack location before writing the temporary YAML.
   const yamlModule = await import('js-yaml');
@@ -29,21 +24,3 @@ async function __zhValidationEnv(name, compose, context, env, getSets, getSource
   }
   return { compose: changed ? yaml.dump(document, { lineWidth: -1, noRefs: true }) : compose, env: merged };
 }
-
-
-// The editor's missing-variable markers use a separate name-only endpoint.
-async function __zhGlobalEnvMarkers(result, getSets) {
-  const globals = await __zhReadGlobalDefaults(getSets);
-  if (!globals) return result;
-  const referenced = new Set([...(result.required || []), ...(result.optional || [])]);
-  const supplied = Object.keys(globals).filter(key => referenced.has(key));
-  const defined = [...new Set([...(result.defined || []), ...supplied])].sort();
-  const missing = (result.missing || []).filter(key => !Object.hasOwn(globals, key));
-  // File-backed values use the existing authenticated stack endpoint for the owner-facing editor.
-  // Legacy Config Set mode retains its name-only response.
-  const file = (process.env.ZH_GLOBAL_ENV_FILE || '').trim();
-  const source = file || (process.env.ZH_GLOBAL_ENV_CONFIG_SET || '').trim();
-  const variables = Object.keys(globals).sort().map(key => ({ key, derived: key === 'TRAEFIK_DOMAIN_REGEX' && Object.hasOwn(globals, 'TRAEFIK_DOMAINS') }));
-  return { ...result, defined, missing, valid: missing.length === 0, globalEnv: { source, variables, ...(file ? { sourceType: 'file', values: globals } : {}) } };
-}
-

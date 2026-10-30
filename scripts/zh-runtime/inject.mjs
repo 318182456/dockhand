@@ -12,7 +12,6 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { patchDefaultTemplate } from './default-template.mjs';
-import { patchGlobalEnvPanel } from './global-env-panel.mjs';
 
 const [, , buildDir, assetDir] = process.argv;
 if (!buildDir || !assetDir) {
@@ -283,10 +282,8 @@ if (selfLogPatched !== 1) {
 
 // 内容哈希文件不能原名覆盖:浏览器可能已永久缓存旧版本。更新所有 JS 资产名称及其引用。
 patchDefaultTemplate(buildDir);
-patchGlobalEnvPanel(buildDir, path.join(assetDir, 'global-env-panel.template.js'));
-const globalPanelPatchSource = fs.readFileSync(new URL('./global-env-panel.mjs', import.meta.url), 'utf8') + fs.readFileSync(path.join(assetDir, 'global-env-panel.template.js'), 'utf8');
 const liveDefaultPatchSource = fs.readFileSync(new URL('./default-template.mjs', import.meta.url), 'utf8');
-const cacheTag = createHash('sha256').update(mirrorJs + progressJs + liveDefaultPatchSource + globalPanelPatchSource).digest('hex').slice(0, 12);
+const cacheTag = createHash('sha256').update(mirrorJs + progressJs + liveDefaultPatchSource).digest('hex').slice(0, 12);
 const clientDir = path.join(buildDir, 'client');
 const renames = [];
 const names = new Map();
