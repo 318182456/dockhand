@@ -120,7 +120,9 @@ export function createGateway(options){
     json(res,405,{error:'不支持的原生更新请求'});return;
    }
    if(!await proxyAllowed(req)){res.writeHead(503,{'content-type':'text/html; charset=utf-8','cache-control':'no-store'});res.end('<!doctype html><meta charset="utf-8"><p>Dockhand 正在启动或需要配置。</p><a href="/_native/settings">打开原生设置</a>');return;}
-   const upstream=http.request({host:'127.0.0.1',port:backendPort,path:req.url,method:req.method,headers:{...req.headers,...(String(req.headers.accept||'').includes('text/html')?{'accept-encoding':'identity'}:{})}},response=>{
+   const forwardHeaders={...req.headers};
+   if(String(req.headers.accept||'').includes('text/html')){forwardHeaders['accept-encoding']='identity';delete forwardHeaders['if-none-match'];delete forwardHeaders['if-modified-since'];}
+   const upstream=http.request({host:'127.0.0.1',port:backendPort,path:req.url,method:req.method,headers:forwardHeaders},response=>{
     if(String(response.headers['content-type']||'').includes('text/html')&&!response.headers['content-encoding']){
      const chunks=[];let size=0;response.on('data',chunk=>{size+=chunk.length;if(size>4000000){response.destroy();res.destroy();return;}chunks.push(chunk);});response.on('end',()=>{const html=Buffer.concat(chunks).toString('utf8').replace('</head>','<script src="/_native/update-client.js"></script></head>'),headers={...response.headers};delete headers['content-length'];delete headers.etag;headers['cache-control']='no-store';res.writeHead(response.statusCode,headers);res.end(html);});
     }else{res.writeHead(response.statusCode,response.headers);response.pipe(res);}
