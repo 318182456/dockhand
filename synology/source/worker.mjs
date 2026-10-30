@@ -4,7 +4,7 @@ export function compatible(pkg,params){
  const major=Number(params.get("major")||params.get("majorversion")||0),minor=Number(params.get("minor")||params.get("minorversion")||0);
  if(major && (major<7 || (major===7 && minor<4)))return false;
  const arch=params.get("arch")||"";
- return !arch || (pkg.arch||[]).includes(arch) || (arch==="x64"&&(pkg.arch||[]).includes("x86_64"));
+ return !arch || (pkg.arch||[]).includes(arch) || (["x64","epyc7002"].includes(arch)&&(pkg.arch||[]).includes("x86_64"));
 }
 function validateManifest(value){
  if(!value || !Array.isArray(value.packages))throw Error("Invalid manifest");

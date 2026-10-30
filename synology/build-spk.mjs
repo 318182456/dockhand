@@ -44,12 +44,12 @@ try{
  normalize(payload);
  function tar(args){const r=spawnSync('tar',args,{stdio:'inherit'});if(r.status!==0)throw Error('tar failed');}
  tar(['-czf',path.join(outer,'package.tgz'),'-C',payload,'.']);
- const info={package:'DockhandNative',version,displayname:'Dockhand Native',description:'Native Dockhand for Synology with registry mirrors, progress and database settings.',arch:'x86_64 broadwellnkv2',os_min_ver:'7.4-0',maintainer:'318182456',maintainer_url:'https://github.com/318182456/dockhand',distributor:'318182456',distributor_url:'https://github.com/318182456/dockhand',install_dep_packages:'ContainerManager',startable:'yes',thirdparty:'yes',dsmuidir:'ui',dsmappname:'SYNO.SDS.DockhandNative.Application',checksum:hash(path.join(outer,'package.tgz'),'md5')};
+ const info={package:'DockhandNative',version,displayname:'Dockhand Native',description:'Native Dockhand for Synology with registry mirrors, progress and database settings.',arch:'x86_64 epyc7002 broadwellnkv2',os_min_ver:'7.4-0',maintainer:'318182456',maintainer_url:'https://github.com/318182456/dockhand',distributor:'318182456',distributor_url:'https://github.com/318182456/dockhand',install_dep_packages:'ContainerManager',startable:'yes',thirdparty:'yes',dsmuidir:'ui',dsmappname:'SYNO.SDS.DockhandNative.Application',checksum:hash(path.join(outer,'package.tgz'),'md5')};
  fs.writeFileSync(path.join(outer,'INFO'),Object.entries(info).map(([k,v])=>k+'="'+v+'"').join('\n')+'\n');
  fs.mkdirSync(options.out,{recursive:true});
  const filename='DockhandNative-x86_64-'+version+'.spk',output=path.join(options.out,filename);
  tar(['-cf',output,'-C',outer,...fs.readdirSync(outer)]);
- const manifest={packages:[{package:'DockhandNative',version,tag:'synology-v'+version,filename,arch:['x86_64','broadwellnkv2'],os_min_ver:'7.4-0',dname:'Dockhand Native',description:'Dockhand 原生套件，包含镜像代理、拉取进度和独立设置页。',size:fs.statSync(output).size,md5:hash(output,'md5'),sha256:hash(output,'sha256'),beta:false}]};
+ const manifest={packages:[{package:'DockhandNative',version,tag:'synology-v'+version,filename,arch:['x86_64','epyc7002','broadwellnkv2'],os_min_ver:'7.4-0',dname:'Dockhand Native',description:'Dockhand 原生套件，包含镜像代理、拉取进度和独立设置页。',size:fs.statSync(output).size,md5:hash(output,'md5'),sha256:hash(output,'sha256'),beta:false}]};
  fs.writeFileSync(path.join(options.out,'synology-manifest.json'),JSON.stringify(manifest,null,2)+'\n');
  console.log(JSON.stringify({file:output,version,size:manifest.packages[0].size,sha256:manifest.packages[0].sha256}));
 }finally{fs.rmSync(staging,{recursive:true,force:true});}

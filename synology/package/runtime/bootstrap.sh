@@ -67,7 +67,7 @@ case "${1:-}" in
    chown "$owner:$group" "$metadata"
    chmod 644 "$metadata"
   done
-  /bin/systemctl reset-failed dockhand-native.service
+  /bin/systemctl reset-failed dockhand-native.service >/dev/null 2>&1 || true
   exec /bin/systemctl start dockhand-native.service ;;
  stop) exec /bin/systemctl stop dockhand-native.service ;;
  status) exec /bin/systemctl is-active --quiet dockhand-native.service ;;

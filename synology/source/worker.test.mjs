@@ -28,3 +28,9 @@ test("unpublished source is empty, upstream outages are reported",async()=>{
  const outage=await handle(new Request("https://source.example/"),{},async()=>new Response(null,{status:500}));
  assert.equal(outage.status,503);
 });
+
+test("SA6400 epyc7002 receives the generic x86_64 package",async()=>{
+ const r=await handle(new Request("https://source.example/?arch=epyc7002&major=7&minor=4&build=90080"),{},catalog);
+ const j=await r.json();assert.equal(j.packages.length,1);assert.equal(j.packages[0].package,"DockhandNative");
+ assert.equal(compatible(pkg,new URLSearchParams("arch=armv8&major=7&minor=4")),false);
+});
