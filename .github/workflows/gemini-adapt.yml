@@ -129,6 +129,15 @@ jobs:
         env:
           ADAPT_PATCH: ${{ runner.temp }}/adapt-output/repair.patch
         run: node scripts/auto-adapt/prepare.mjs apply
+      - name: Load the exact official YAML parser for validation tests
+        env:
+          UPSTREAM_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          docker pull "fnsys/dockhand:$UPSTREAM_VERSION"
+          ID=$(docker create "fnsys/dockhand:$UPSTREAM_VERSION")
+          mkdir -p node_modules
+          docker cp "$ID:/app/node_modules/js-yaml" node_modules/js-yaml
+          docker rm "$ID"
       - name: Run original regression tests
         run: node --test scripts/zh-runtime/*.test.mjs synology/native.test.mjs synology/source/worker.test.mjs scripts/auto-adapt/*.test.mjs
       - name: Build complete overlay against exact upstream
