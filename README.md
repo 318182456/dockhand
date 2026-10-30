@@ -188,3 +188,10 @@ Config Sets 是普通配置存储，密码继续使用秘密变量/提供器。�
 ## License
 
 上游项目许可见 [LICENSE.txt](LICENSE.txt)。本仓库仅追加镜像加速补丁,不改变上游许可条款。
+
+
+### 共享 global.env
+
+可设置 `ZH_GLOBAL_ENV_FILE=/volume1/docker/all/global.env`，每次部署和校验直接读取该文件。该模式优先于旧 Config Set，保留项目 `.env`、数据库变量及原生 secret 的覆盖优先级，不把共享值写进各项目 `.env`。变量面板显示文件来源与当前值。
+
+共享文件保持权限 600，不提交到 Git。它用于 Compose 插值，不会自动作为整个容器的环境变量文件；仅应用 Compose 明确引用的变量会传入容器。群晖界面本身不会自动读取该文件，命令行使用共享变量时需显式传 `--env-file`。

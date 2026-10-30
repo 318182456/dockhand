@@ -1,6 +1,6 @@
 // Validation uses its own temporary Compose runner, outside the deploy dispatcher.
 async function __zhValidationEnv(name, compose, context, env, getSets, getSource, getDirectory) {
-  const selected = (process.env.ZH_GLOBAL_ENV_CONFIG_SET || '').trim();
+  const selected = (process.env.ZH_GLOBAL_ENV_FILE || process.env.ZH_GLOBAL_ENV_CONFIG_SET || '').trim();
   if (!selected || selected === 'off') return { compose, env };
   const path = await import('node:path');
   const source = context?.existing ? await getSource(name, context.environmentId ?? null) : null;
@@ -39,9 +39,11 @@ async function __zhGlobalEnvMarkers(result, getSets) {
   const supplied = Object.keys(globals).filter(key => referenced.has(key));
   const defined = [...new Set([...(result.defined || []), ...supplied])].sort();
   const missing = (result.missing || []).filter(key => !Object.hasOwn(globals, key));
-  // Never send global values, or mark unreferenced shared defaults as unused.
-  const source = process.env.ZH_GLOBAL_ENV_CONFIG_SET.trim();
+  // File-backed values use the existing authenticated stack endpoint for the owner-facing editor.
+  // Legacy Config Set mode retains its name-only response.
+  const file = (process.env.ZH_GLOBAL_ENV_FILE || '').trim();
+  const source = file || (process.env.ZH_GLOBAL_ENV_CONFIG_SET || '').trim();
   const variables = Object.keys(globals).sort().map(key => ({ key, derived: key === 'TRAEFIK_DOMAIN_REGEX' && Object.hasOwn(globals, 'TRAEFIK_DOMAINS') }));
-  return { ...result, defined, missing, valid: missing.length === 0, globalEnv: { source, variables } };
+  return { ...result, defined, missing, valid: missing.length === 0, globalEnv: { source, variables, ...(file ? { sourceType: 'file', values: globals } : {}) } };
 }
 

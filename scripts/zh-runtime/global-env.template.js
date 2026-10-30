@@ -1,13 +1,28 @@
-// Loaded only when ZH_GLOBAL_ENV_CONFIG_SET explicitly names a Config Set.
+// Opt in using a shared env file, or a legacy named Config Set.
 // These are plain-text interpolation defaults, not a secret store.
 async function __zhReadGlobalDefaults(getConfigSets) {
+  const file = (process.env.ZH_GLOBAL_ENV_FILE || '').trim();
   const selected = (process.env.ZH_GLOBAL_ENV_CONFIG_SET || '').trim();
-  if (!selected || selected === 'off') return null;
-  const sets = await getConfigSets();
-  const matches = sets.filter(set => set.name === selected);
-  if (matches.length !== 1) throw new Error('[GlobalEnv] Config Set not found or ambiguous');
+  let entries;
+  if (file) {
+    const path = await import('node:path');
+    if (!path.isAbsolute(file)) throw new Error('[GlobalEnv] Shared env path must be absolute');
+    try {
+      const fs = await import('node:fs');
+      const { parseEnv } = await import('node:util');
+      const raw = fs.readFileSync(file, 'utf8');
+      if (Buffer.byteLength(raw) > 1024 * 1024) throw new Error('too large');
+      entries = Object.entries(parseEnv(raw)).map(([key,value]) => ({key,value}));
+    } catch { throw new Error('[GlobalEnv] Shared env file cannot be read'); }
+  } else {
+    if (!selected || selected === 'off') return null;
+    const sets = await getConfigSets();
+    const matches = sets.filter(set => set.name === selected);
+    if (matches.length !== 1) throw new Error('[GlobalEnv] Config Set not found or ambiguous');
+    entries = matches[0].envVars || [];
+  }
   const globals = Object.create(null);
-  for (const entry of matches[0].envVars || []) {
+  for (const entry of entries) {
     const key = entry.key;
     if (typeof key !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) ||
         /^(?:DOCKER_|COMPOSE_|NODE_|LD_|DYLD_)/.test(key) ||

@@ -80,3 +80,14 @@ test('global panel bootstrap is harmless during SSR and injection is complete/id
   assert.throws(()=>patchGlobalEnvPanel(build,template),/expected one stack modal client/);
 });
 
+
+test('file-backed validation and markers work without a Config Set and expose the configured source',async()=>{
+  const file=path.join(temporary,'shared.env');process.env.ZH_GLOBAL_ENV_FILE=file;
+  try{
+    fs.writeFileSync(file,"TZ='Asia/Shanghai'\nPUID='1026'\nTRAEFIK_DOMAINS='example.test'\n");
+    const r=await apply('demo','services:\n  app:\n    image: app:1\n', {existing:true}, {},()=>{throw Error('must not read Config Sets')},source,getDirectory);
+    assert.equal(r.env.PUID,'1026');
+    const m=await markers({required:['PUID'],missing:['PUID'],defined:[]},()=>{throw Error('must not read Config Sets')});
+    assert.equal(m.globalEnv.sourceType,'file');assert.equal(m.globalEnv.source,file);assert.equal(m.globalEnv.values.PUID,'1026');assert.deepEqual(m.missing,[]);
+  }finally{delete process.env.ZH_GLOBAL_ENV_FILE;}
+});

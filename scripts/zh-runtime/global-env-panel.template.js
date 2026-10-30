@@ -76,12 +76,17 @@
       const link = create('a',label('管理全局变量 ↗','Manage globals ↗'));
       link.href = '/settings?tab=config-sets'; link.target = '_blank'; link.rel = 'noopener noreferrer';
       link.style.cssText = 'color:#3b82f6;text-decoration:none;white-space:nowrap';
-      footer.append(hint,link); next.append(footer);
+      if (metadata.sourceType === 'file') {hint.textContent=label('共享 global.env · 堆栈同名变量优先','Shared global.env · Stack overrides take precedence'); footer.append(hint);} else footer.append(hint,link); next.append(footer);
       if (root) root.replaceWith(next); else header.append(next);
     }
   }
   async function readValues(current, token) {
     try {
+      if (current.sourceType === 'file') {
+        if (token !== version) return;
+        values = Object.fromEntries(current.variables.map(item => [item.key, String(current.values?.[item.key] ?? '')]));
+        status = 'ready'; schedule(); return;
+      }
       // Reuse the native Config Sets endpoint and its authorization checks.
       const response = await nativeFetch('/api/config-sets');
       if (!response.ok) throw Error('not authorized');

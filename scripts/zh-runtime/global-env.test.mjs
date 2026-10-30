@@ -13,7 +13,10 @@ const runtimePath = path.join(temporary, 'runtime.mjs');
 fs.writeFileSync(runtimePath, fs.readFileSync(templatePath, 'utf8') + '\nexport { __zhGlobalEnv };');
 const { __zhGlobalEnv: apply } = await import(pathToFileURL(runtimePath));
 const oldSelection = process.env.ZH_GLOBAL_ENV_CONFIG_SET;
+const oldFile = process.env.ZH_GLOBAL_ENV_FILE;
+delete process.env.ZH_GLOBAL_ENV_FILE;
 after(() => {
+  if(oldFile===undefined)delete process.env.ZH_GLOBAL_ENV_FILE;else process.env.ZH_GLOBAL_ENV_FILE=oldFile;
   if (oldSelection === undefined) delete process.env.ZH_GLOBAL_ENV_CONFIG_SET;
   else process.env.ZH_GLOBAL_ENV_CONFIG_SET = oldSelection;
   fs.rmSync(temporary, { recursive: true, force: true });
@@ -152,4 +155,20 @@ test('reject malformed domain lists instead of accepting route expressions', asy
   for(const value of ['',', ,','example.com|evil.test','-bad.example','bad..example','example.com,bad@evil']){
     await assert.rejects(apply(options,{},undefined,provider({TRAEFIK_DOMAINS:value})),/Invalid TRAEFIK_DOMAINS/);
   }
+});
+
+test('shared env file is read directly, refreshed, and never copied to project env', async () => {
+  const file=path.join(temporary,'shared.env'),dir=fs.mkdtempSync(path.join(temporary,'file-app-'));
+  process.env.ZH_GLOBAL_ENV_FILE=file;
+  const own=path.join(dir,'.env');fs.writeFileSync(own,'APP_PORT=8080\n');
+  try {
+    fs.writeFileSync(file,"TRAEFIK_DOMAINS='example.test,example.net'\nTZ='Asia/Shanghai'\nPUID='1026'\nUMASK='000'\nLITERAL='$value'\n");
+    const first=await apply({workingDir:dir},{},{},()=>{throw Error('must not read legacy DB')});
+    assert.equal(first.PUID,'1026');assert.equal(first.UMASK,'000');assert.equal(first.LITERAL,'$value');
+    assert.equal(first.TRAEFIK_DOMAIN_REGEX,'example[.]test|example[.]net');
+    assert.equal(fs.readFileSync(own,'utf8'),'APP_PORT=8080\n');
+    fs.writeFileSync(file,"TZ='UTC'\n");assert.equal((await apply({workingDir:dir},{},{},()=>[])).TZ,'UTC');
+    fs.writeFileSync(file,'DOCKER_HOST=forbidden\n');await assert.rejects(apply({workingDir:dir},{},{},()=>[]),/reserved/);
+    fs.unlinkSync(file);await assert.rejects(apply({workingDir:dir},{},{},()=>[]),/cannot be read/);
+  } finally {delete process.env.ZH_GLOBAL_ENV_FILE;}
 });
