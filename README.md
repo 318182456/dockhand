@@ -9,7 +9,7 @@
 本仓库**不包含也不修改上游源码**。CI 每 6 小时检测一次上游 release,发现新版本后:
 
 1. 拉取上游官方镜像 `fnsys/dockhand:<tag>`
-2. 构建期([Dockerfile.zh](Dockerfile.zh))通过 [scripts/zh-runtime/inject.mjs](scripts/zh-runtime/inject.mjs) 注入镜像加速、日志行刷新及 Compose 校验路径兼容,支持镜像拉取、Stack 预拉取及更新检查,不重新编译前端
+2. 构建期([Dockerfile.zh](Dockerfile.zh))通过 [scripts/zh-runtime/inject.mjs](scripts/zh-runtime/inject.mjs) 注入镜像加速及日志行刷新,支持镜像拉取、Stack 预拉取及更新检查,不重新编译前端
 3. 重新打包发布;已构建版本记录于 [VERSION](VERSION)
 
 ## 使用
@@ -80,7 +80,7 @@ docker compose --env-file ../all/global.env --env-file .env up -d
 
 后一个文件用于项目专用变量。服务级 env_file 不提供标签或 extends.file 的插值环境。Dockhand 图形界面的部署不会额外读取共享文件；上游 Config Sets 仍作为普通配置预设保留。
 
-镜像加速、拉取进度和默认模板的刷新修正保持独立。验证器仅修正临时校验目录下 extends 相对路径，不注入共享变量，也不改写项目 .env。
+镜像加速、拉取进度和默认模板的刷新修正保持独立。全局变量界面及 Compose 校验补丁已移除，校验恢复上游行为。
 
 ## License
 
