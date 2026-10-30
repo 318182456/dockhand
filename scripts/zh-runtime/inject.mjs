@@ -73,7 +73,7 @@ if (mirrorPatched !== 1) {
 //     → 记下操作参数之前的长度 k.__zhBase,并取得 op/pullPolicy/serviceName 变量名
 //   try{console.log(`${$} Spawning docker compose process from ${C}: ${k.join(" ")}`);const I=spawn(k[0],k.slice(1),{cwd:C,env:_,stdio:[x?"pipe":"inherit",...]});x&&I.stdin&&(I.stdin.write(D)
 //     → 取得 日志前缀/cwd/env/是否 stdin/compose 内容 变量名,在 try 前插入 await __zhComposePrepull(...)
-const PUSH_RE = /([\w$]+)\.push\(\.\.\.[\w$]+\(([\w$]+),\{forceRecreate:[\w$]+,removeVolumes:[\w$]+,build:[\w$]+,noBuildCache:[\w$]+,pullPolicy:([\w$]+),serviceName:([\w$]+)\}\)\)/g;
+const PUSH_RE = /([\w$]+)\.push\(\.\.\.[\w$]+\(([\w$]+),\{forceRecreate:[\w$]+,removeVolumes:[\w$]+,build:[\w$]+,noBuildCache:[\w$]+,(?:pullBase:[\w$]+,)?(?:noBuild:[\w$]+,)?pullPolicy:([\w$]+),serviceName:([\w$]+)\}\)\)/g;
 const SPAWN_RE = /try\{console\.log\(`\$\{([\w$]+)\} Spawning docker compose process from \$\{([\w$]+)\}: \$\{([\w$]+)\.join\(" "\)\}`\);const ([\w$]+)=[\w$]+\(\3\[0\],\3\.slice\(1\),\{cwd:\2,env:([\w$]+),stdio:\[([\w$]+)\?"pipe":"inherit","pipe","pipe"\]\}\);\6&&\4\.stdin&&\(\4\.stdin\.write\(([\w$]+)\)/g;
 const PREPULL_MARK = '__zhComposePrepull(';
 // collectProcess(proc, onLine ? makeLineForwarder(onLine, secrets) : undefined)

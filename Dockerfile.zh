@@ -15,6 +15,8 @@ FROM node:24-slim AS patcher
 COPY --from=official /app/build /build
 COPY scripts/zh-runtime/registry-mirror.template.js /zh/registry-mirror.template.js
 COPY scripts/zh-runtime/inject.mjs /zh/inject.mjs
+COPY scripts/zh-runtime/inject-compose.test.mjs /zh/inject-compose.test.mjs
+RUN node --test /zh/inject-compose.test.mjs
 COPY scripts/zh-runtime/pull-progress.template.js /zh/pull-progress.template.js
 COPY scripts/zh-runtime/default-template.mjs scripts/zh-runtime/default-template.test.mjs /zh/
 COPY scripts/zh-runtime/global-env-panel.mjs scripts/zh-runtime/global-env-panel.template.js /zh/
