@@ -23,6 +23,12 @@ function publishTraefik(env,globals){
  const root=domains.find(d=>hostname.endsWith('.'+d));
  if(root){const prefix=hostname.slice(0,-root.length-1);for(const domain of domains)hosts.add(new URL('https://'+prefix+'.'+domain).hostname);}
  const router={rule:[...hosts].map(h=>'Host('+String.fromCharCode(96)+h+String.fromCharCode(96)+')').join(' || '),entryPoints:['websecure'],service:'dockhand-native',middlewares:['basic-headers@file'],tls:{},priority:100};
+ // Use Gateway's shared browser session adapter when it is installed; native
+ // API authentication stays with Dockhand and standalone installations still work.
+ try {
+  const policy=yaml.load(fs.readFileSync(path.join(path.dirname(file),'migration-policy.yml'),'utf8'));
+  if(policy?.http?.middlewares?.['oidc-login']?.plugin?.ssobridge?.mode==='oidc')router.middlewares.unshift('oidc-login@file');
+ } catch {}
  const document={http:{routers:{'dockhand-native':router},services:{'dockhand-native':{loadBalancer:{servers:[{url:'http://'+(String(env.DOCKHAND_NATIVE_TRAEFIK_BACKEND_HOST||'127.0.0.1').includes(':')?'['+env.DOCKHAND_NATIVE_TRAEFIK_BACKEND_HOST+']':env.DOCKHAND_NATIVE_TRAEFIK_BACKEND_HOST||'127.0.0.1')+':'+env.PORT}]}}}}};
  const text=yaml.dump(document,{noRefs:true,lineWidth:-1});
  if(fs.existsSync(file)&&fs.readFileSync(file,'utf8')===text)return;
