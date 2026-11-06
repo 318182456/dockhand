@@ -23,6 +23,8 @@ COPY scripts/zh-runtime/global-env-panel.mjs scripts/zh-runtime/global-env-panel
 RUN node --test /zh/default-template.test.mjs
 COPY scripts/zh-runtime/global-env.mjs scripts/zh-runtime/global-env.template.js scripts/zh-runtime/global-env.test.mjs /zh/
 RUN node --test /zh/global-env.test.mjs
+COPY scripts/zh-runtime/stack-primary-groups.mjs scripts/zh-runtime/stack-primary-groups.test.mjs /zh/
+RUN node --test /zh/stack-primary-groups.test.mjs
 RUN node /zh/inject.mjs /build /zh
 RUN node /zh/global-env.mjs /build /zh/global-env.template.js
 COPY --from=official /app/node_modules/js-yaml /zh/node_modules/js-yaml
