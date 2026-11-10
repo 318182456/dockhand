@@ -1,5 +1,5 @@
 import http from 'node:http';
-import {defaultDataDir} from './native-paths.mjs';
+import {defaultDataDir,defaultTraefikFile,defaultTraefikHost} from './native-paths.mjs';
 import net from 'node:net';
 import fs from 'node:fs';
 import {randomBytes,createHash} from 'node:crypto';
@@ -15,10 +15,10 @@ export function visibleSettings(env){
 export function mergeSettings(previous,input){
  const env={...previous},db=input.database;if(Object.hasOwn(input,'githubToken')){if(typeof input.githubToken!=='string'||input.githubToken.length>4096||/[\r\n\x00]/.test(input.githubToken))throw Error('GitHub Token 无效');env.DOCKHAND_GITHUB_TOKEN=input.githubToken.trim();}delete env.DOCKHAND_NATIVE_GLOBAL_ENV_FILE;
  if(input.traefik){
-  const t=input.traefik;env.DOCKHAND_NATIVE_TRAEFIK_ENABLED=!!t.enabled;
-  if(t.enabled&&(!(/^\/volume[0-9]+\//.test(String(t.file))||String(t.file)==='/var/packages/TraefikNative/var/runtime/dynamic/dockhand-native.yml')||!/[.]ya?ml$/.test(String(t.file))))throw Error('请填写数据卷中动态配置文件的完整路径');
-  env.DOCKHAND_NATIVE_TRAEFIK_FILE=String(t.file||'');
-  const host=String(t.host||'127.0.0.1'),u=new URL('http://'+(host.includes(':')&&!host.startsWith('[')?'['+host+']':host));
+  const t=input.traefik,file=String(t.file??(previous.DOCKHAND_NATIVE_TRAEFIK_FILE||defaultTraefikFile));env.DOCKHAND_NATIVE_TRAEFIK_ENABLED=!!t.enabled;
+  if(t.enabled&&(!(/^\/volume[0-9]+\//.test(file)||file==='/var/packages/TraefikNative/var/runtime/dynamic/dockhand-native.yml')||!/[.]ya?ml$/.test(file)))throw Error('请填写数据卷中动态配置文件的完整路径');
+  env.DOCKHAND_NATIVE_TRAEFIK_FILE=file;
+  const host=String(t.host??(previous.DOCKHAND_NATIVE_TRAEFIK_BACKEND_HOST||defaultTraefikHost)),u=new URL('http://'+(host.includes(':')&&!host.startsWith('[')?'['+host+']':host));
   if(u.username||u.password||u.port||u.pathname!=='/'||u.search||u.hash)throw Error('后端主机只填写 IP 或主机名');
   env.DOCKHAND_NATIVE_TRAEFIK_BACKEND_HOST=u.hostname.replace(/^\[|\]$/g,'');
  }

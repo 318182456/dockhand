@@ -2,6 +2,8 @@ import fs from 'node:fs';
 export const packageVar='/var/packages/DockhandNative/var';
 export const defaultDataDir=packageVar+'/data';
 export const defaultHome=packageVar+'/home';
+export const defaultTraefikFile='/var/packages/TraefikNative/var/runtime/dynamic/dockhand-native.yml';
+export const defaultTraefikHost='127.0.0.1';
 export function runtimeConfigPath(env=process.env,exists=fs.existsSync){
  if(env.DOCKHAND_NATIVE_CONFIG)return env.DOCKHAND_NATIVE_CONFIG;
  const current=packageVar+'/config/runtime-env.json';

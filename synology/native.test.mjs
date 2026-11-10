@@ -48,3 +48,11 @@ test('existing Gateway package routing path is editable without admitting arbitr
  assert.equal(mergeSettings(previous,{...input,traefik:{enabled:true,file,host:'127.0.0.1'}}).DOCKHAND_NATIVE_TRAEFIK_FILE,file);
  assert.throws(()=>mergeSettings(previous,{...input,traefik:{enabled:true,file:'/var/packages/Other/var/secret.yml',host:'127.0.0.1'}}));
 });
+
+test('same-host integration supplies defaults without manual path or host fields',()=>{
+ const fresh=mergeSettings(previous,{...input,traefik:{enabled:true}});
+ assert.equal(fresh.DOCKHAND_NATIVE_TRAEFIK_FILE,'/var/packages/TraefikNative/var/runtime/dynamic/dockhand-native.yml');assert.equal(fresh.DOCKHAND_NATIVE_TRAEFIK_BACKEND_HOST,'127.0.0.1');
+ const existing={...previous,DOCKHAND_NATIVE_TRAEFIK_FILE:'/volume1/custom/dynamic/dockhand.yml',DOCKHAND_NATIVE_TRAEFIK_BACKEND_HOST:'192.0.2.10'};
+ const preserved=mergeSettings(existing,{...input,traefik:{enabled:true}});assert.equal(preserved.DOCKHAND_NATIVE_TRAEFIK_FILE,existing.DOCKHAND_NATIVE_TRAEFIK_FILE);assert.equal(preserved.DOCKHAND_NATIVE_TRAEFIK_BACKEND_HOST,existing.DOCKHAND_NATIVE_TRAEFIK_BACKEND_HOST);
+ const html=fs.readFileSync(new URL('./package/runtime/settings.html',import.meta.url),'utf8');assert(!html.includes('traefikFile'));assert(!html.includes('traefikHost'));
+});
