@@ -34,3 +34,17 @@ test('native settings require admin authentication and reject cross-origin write
 });
 
 test('removed shared domain field leaves a valid settings form and cleans legacy config',()=>{const html=fs.readFileSync(new URL('./package/runtime/settings.html',import.meta.url),'utf8');assert.equal(html.includes('globalEnvFile'),false);assert.equal(html.includes('共享域名变量文件'),false);const merged=mergeSettings({...previous,DOCKHAND_NATIVE_GLOBAL_ENV_FILE:'/fixture/old.env'},input);assert.equal('DOCKHAND_NATIVE_GLOBAL_ENV_FILE' in merged,false);});
+test('GitHub token settings preserve existing clients and reject header injection',()=>{
+ const old={...previous,DOCKHAND_GITHUB_TOKEN:'synthetic-token'};
+ assert.equal(mergeSettings(old,input).DOCKHAND_GITHUB_TOKEN,'synthetic-token');
+ const next=mergeSettings(old,{...input,githubToken:'synthetic-new'});
+ assert.equal(next.DOCKHAND_GITHUB_TOKEN,'synthetic-new');assert.equal(visibleSettings(next).githubToken,'synthetic-new');
+ assert.throws(()=>mergeSettings(old,{...input,githubToken:'invalid\r\nheader'}));
+ assert.equal(mergeSettings(previous,{...input,dataDir:'/var/packages/DockhandNative/var/data'}).DATA_DIR,'/var/packages/DockhandNative/var/data');
+});
+
+test('existing Gateway package routing path is editable without admitting arbitrary package files',()=>{
+ const file='/var/packages/TraefikNative/var/runtime/dynamic/dockhand-native.yml';
+ assert.equal(mergeSettings(previous,{...input,traefik:{enabled:true,file,host:'127.0.0.1'}}).DOCKHAND_NATIVE_TRAEFIK_FILE,file);
+ assert.throws(()=>mergeSettings(previous,{...input,traefik:{enabled:true,file:'/var/packages/Other/var/secret.yml',host:'127.0.0.1'}}));
+});

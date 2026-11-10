@@ -1,21 +1,22 @@
 import http from 'node:http';
+import {defaultDataDir} from './native-paths.mjs';
 import net from 'node:net';
 import fs from 'node:fs';
 import {randomBytes,createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {createUpdater} from './update-api.mjs';
 const sessions=new Map(),attempts=new Map(),adminCache=new Map();
-const defaults={DATA_DIR:'/volume1/docker/dockhand/data',PORT:'0',HOST:'0.0.0.0',TZ:'Asia/Shanghai'};
+const defaults={DATA_DIR:defaultDataDir,PORT:'0',HOST:'0.0.0.0',TZ:'Asia/Shanghai'};
 export function visibleSettings(env){
  let database={type:'postgres',host:'127.0.0.1',port:5432,database:'dockhand',username:'',hasPassword:false,sslmode:'disable'};
  if(env.DATABASE_URL){const u=new URL(env.DATABASE_URL);database={type:'postgres',host:u.hostname.replace(/^\[|\]$/g,''),port:Number(u.port||5432),database:decodeURIComponent(u.pathname.slice(1)),username:decodeURIComponent(u.username),hasPassword:!!u.password,sslmode:u.searchParams.get('sslmode')||'disable'};}
- return {traefik:{enabled:!!env.DOCKHAND_NATIVE_TRAEFIK_ENABLED,file:env.DOCKHAND_NATIVE_TRAEFIK_FILE||"",host:env.DOCKHAND_NATIVE_TRAEFIK_BACKEND_HOST||"127.0.0.1"},publicUrl:env.DOCKHAND_NATIVE_PUBLIC_URL||"",database,dataDir:env.DATA_DIR||defaults.DATA_DIR,port:Number(env.PORT||0),tz:env.TZ||defaults.TZ,httpProxy:env.HTTP_PROXY||'',httpsProxy:env.HTTPS_PROXY||'',allProxy:env.ALL_PROXY||'',noProxy:env.NO_PROXY||''};
+ return {githubToken:env.DOCKHAND_GITHUB_TOKEN||'',traefik:{enabled:!!env.DOCKHAND_NATIVE_TRAEFIK_ENABLED,file:env.DOCKHAND_NATIVE_TRAEFIK_FILE||"",host:env.DOCKHAND_NATIVE_TRAEFIK_BACKEND_HOST||"127.0.0.1"},publicUrl:env.DOCKHAND_NATIVE_PUBLIC_URL||"",database,dataDir:env.DATA_DIR||defaults.DATA_DIR,port:Number(env.PORT||0),tz:env.TZ||defaults.TZ,httpProxy:env.HTTP_PROXY||'',httpsProxy:env.HTTPS_PROXY||'',allProxy:env.ALL_PROXY||'',noProxy:env.NO_PROXY||''};
 }
 export function mergeSettings(previous,input){
- const env={...previous},db=input.database;delete env.DOCKHAND_NATIVE_GLOBAL_ENV_FILE;
+ const env={...previous},db=input.database;if(Object.hasOwn(input,'githubToken')){if(typeof input.githubToken!=='string'||input.githubToken.length>4096||/[\r\n\x00]/.test(input.githubToken))throw Error('GitHub Token 无效');env.DOCKHAND_GITHUB_TOKEN=input.githubToken.trim();}delete env.DOCKHAND_NATIVE_GLOBAL_ENV_FILE;
  if(input.traefik){
   const t=input.traefik;env.DOCKHAND_NATIVE_TRAEFIK_ENABLED=!!t.enabled;
-  if(t.enabled&&(!/^\/volume[0-9]+\//.test(String(t.file))||!/[.]ya?ml$/.test(String(t.file))))throw Error('请填写数据卷中动态配置文件的完整路径');
+  if(t.enabled&&(!(/^\/volume[0-9]+\//.test(String(t.file))||String(t.file)==='/var/packages/TraefikNative/var/runtime/dynamic/dockhand-native.yml')||!/[.]ya?ml$/.test(String(t.file))))throw Error('请填写数据卷中动态配置文件的完整路径');
   env.DOCKHAND_NATIVE_TRAEFIK_FILE=String(t.file||'');
   const host=String(t.host||'127.0.0.1'),u=new URL('http://'+(host.includes(':')&&!host.startsWith('[')?'['+host+']':host));
   if(u.username||u.password||u.port||u.pathname!=='/'||u.search||u.hash)throw Error('后端主机只填写 IP 或主机名');
@@ -28,7 +29,7 @@ export function mergeSettings(previous,input){
  }
  if(!db||db.type!=='postgres')throw Error('请选择数据库类型');
  if(!Number.isInteger(Number(input.port))||(Number(input.port)!==0&&Number(input.port)<1024)||Number(input.port)>65535)throw Error('端口填写 0 可自动分配，或填写 1024–65535');
- if(typeof input.dataDir!=='string'||!input.dataDir.startsWith('/volume')||input.dataDir.includes('\0'))throw Error('数据目录应是数据卷中的绝对路径');
+ if(typeof input.dataDir!=='string'||!(input.dataDir.startsWith('/volume')||input.dataDir===defaultDataDir)||input.dataDir.includes('\0'))throw Error('数据目录应是数据卷中的绝对路径');
  env.DATA_DIR=input.dataDir;env.PORT=String(input.port);env.TZ=String(input.tz||defaults.TZ);
  {
   if(!db.host||!db.database||!db.username||!/^\d+$/.test(String(db.port))||Number(db.port)<1||Number(db.port)>65535)throw Error('请填写完整的 PostgreSQL 连接信息');

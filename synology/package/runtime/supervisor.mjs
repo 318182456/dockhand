@@ -1,3 +1,4 @@
+import {defaultDataDir,defaultHome,runtimeConfigPath} from './native-paths.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
@@ -6,8 +7,8 @@ import {spawn} from 'node:child_process';
 import http from 'node:http';
 import os from 'node:os';
 import {createGateway} from './settings.mjs';
-const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'),configPath=process.env.DOCKHAND_NATIVE_CONFIG||'/volume1/docker/dockhand/native/runtime-env.json';
-let settings={DATA_DIR:'/volume1/docker/dockhand/data',HOME:'/volume1/docker/dockhand/native/home',HOST:'0.0.0.0',PORT:'0',TZ:'Asia/Shanghai',ZH_GLOBAL_ENV_CONFIG_SET:'全局变量'};
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'),configPath=runtimeConfigPath();
+let settings={DATA_DIR:defaultDataDir,HOME:defaultHome,HOST:'0.0.0.0',PORT:'0',TZ:'Asia/Shanghai',ZH_GLOBAL_ENV_CONFIG_SET:'全局变量'};
 try{settings={...settings,...JSON.parse(fs.readFileSync(configPath,'utf8'))};}catch{}
 delete settings.DOCKHAND_NATIVE_GLOBAL_ENV_FILE;
 const require=createRequire(path.join(root,'app','package.json')),backendPort=Number(settings.NATIVE_BACKEND_PORT||13009);
@@ -47,7 +48,7 @@ function health(){
 async function testConnection(next){
  if(Number(next.PORT)===backendPort)throw Error('访问端口不能与内部服务端口相同');
  const directory=path.resolve(next.DATA_DIR);
- if(!/^\/volume[0-9]+\//.test(directory))throw Error('请选择数据卷中的目录');
+ if(!/^\/volume[0-9]+\//.test(directory)&&directory!==defaultDataDir)throw Error('请选择数据卷中的目录');
  fs.accessSync(directory,fs.constants.R_OK|fs.constants.W_OK);
  if(!next.DATABASE_URL)throw Error('请配置 PostgreSQL 数据库');
  const {default:postgres}=await import(pathToFileURL(require.resolve('postgres')));

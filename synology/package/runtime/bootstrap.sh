@@ -23,6 +23,13 @@ for managed in "$unit" "$control" "$sudoers"; do
   echo 'Unexpected existing host integration file; refusing to replace it'; exit 1
  fi
 done
+# Keep mutable state under the package's persistent var, owned by the configured NAS account.
+for directory in "$pkg/var/config" "$pkg/var/data" "$pkg/var/home"; do
+ if [ -L "$directory" ]; then echo 'Unexpected state symlink'; exit 1; fi
+ mkdir -p "$directory"
+ chown "$uid:$gid" "$directory"
+ chmod 700 "$directory"
+done
 mkdir -p /usr/local/libexec
 cat > "$unit" <<EOF
 # Managed by DockhandNative
