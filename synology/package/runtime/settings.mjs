@@ -120,15 +120,24 @@ export function createGateway(options){
     json(res,405,{error:'不支持的原生更新请求'});return;
    }
    if(!await proxyAllowed(req)){res.writeHead(503,{'content-type':'text/html; charset=utf-8','cache-control':'no-store'});res.end('<!doctype html><meta charset="utf-8"><p>Dockhand 正在启动或需要配置。</p><a href="/_native/settings">打开原生设置</a>');return;}
+   if(req.aborted||res.destroyed)return;
+   let upstreamResponse;
    const forwardHeaders={...req.headers};
    if(String(req.headers.accept||'').includes('text/html')){forwardHeaders['accept-encoding']='identity';delete forwardHeaders['if-none-match'];delete forwardHeaders['if-modified-since'];}
    const upstream=http.request({host:'127.0.0.1',port:backendPort,path:req.url,method:req.method,headers:forwardHeaders},response=>{
+    upstreamResponse=response;
+    if(res.destroyed){response.destroy();return;}
+    response.on('error',()=>res.destroy());
     if(String(response.headers['content-type']||'').includes('text/html')&&!response.headers['content-encoding']){
      const chunks=[];let size=0;response.on('data',chunk=>{size+=chunk.length;if(size>4000000){response.destroy();res.destroy();return;}chunks.push(chunk);});response.on('end',()=>{const html=Buffer.concat(chunks).toString('utf8').replace('</head>','<script src="/_native/update-client.js"></script></head>'),headers={...response.headers};delete headers['content-length'];delete headers.etag;headers['cache-control']='no-store';res.writeHead(response.statusCode,headers);res.end(html);});
     }else{res.writeHead(response.statusCode,response.headers);response.pipe(res);}
    });
-   upstream.on('error',()=>{if(!res.headersSent)json(res,503,{error:'应用正在重新连接'});else res.destroy();});
-   req.on('aborted',()=>upstream.destroy());req.pipe(upstream);
+   // A GET request may already be complete when its SSE response is abandoned.
+   // Couple downstream response cancellation to both upstream transport objects.
+   const cancelUpstream=()=>{upstreamResponse?.destroy();upstream.destroy();};
+   res.once('close',()=>{if(!res.writableFinished)cancelUpstream();});
+   upstream.on('error',()=>{if(res.destroyed)return;if(!res.headersSent)json(res,503,{error:'应用正在重新连接'});else res.destroy();});
+   req.once('aborted',cancelUpstream);req.pipe(upstream);
   }catch(e){if(!res.headersSent)json(res,400,{error:String(e.message||'请求失败').slice(0,180)});else res.destroy();}
  });
  server.on('upgrade',async(req,socket,head)=>{
